@@ -66,10 +66,27 @@ class RememberRequest(BaseModel):
 
 # ── Tool execution ────────────────────────────────────────────────────────────
 
-def execute_tool(name: str, tool_input: dict) -> dict:
+def execute_tool(name: str, tool_input: dict, lane: str = "dispatch") -> dict:
     """Execute a tool call and return a result dict."""
     try:
-        if name == "create_note":
+        if name == "update_memory":
+            note = tool_input.get("note", "").strip()
+            if not note:
+                return {"success": False, "message": "Note cannot be empty"}
+            from datetime import datetime
+            existing = vault.agent_memory(lane) or ""
+            entry = f"\n| {datetime.now().strftime('%Y-%m-%d')} | {note} |"
+            if "## Memory Log" in existing:
+                updated = existing.rstrip() + entry + "\n"
+            else:
+                updated = (
+                    existing.rstrip()
+                    + f"\n\n## Memory Log\n| Date | Note |\n|------|------|\n{entry}\n"
+                )
+            vault.update_agent_memory(lane, updated)
+            return {"success": True, "message": "Memory updated"}
+
+        elif name == "create_note":
             path = vault.create_note(
                 lane=tool_input["lane"],
                 title=tool_input["title"],
@@ -137,7 +154,14 @@ async def chat(lane: str, body: ChatRequest):
     context = vault.build_context(focus_lanes=focus)
 
     memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
-    system = f"{agent['system']}{memory_block}\n\n---\n\n# VAULT CONTEXT\n\n{context}"
+    memory_instruction = (
+        "\n\n---\n\n# MEMORY TOOL\n\n"
+        "You have an `update_memory` tool. Use it during conversations to log things worth "
+        "remembering — Greg's preferences, patterns, decisions, and observations specific to "
+        "your lane. Your memory is private to you and persists across all conversations. "
+        "Call it whenever you learn something your future self should know."
+    )
+    system = f"{agent['system']}{memory_block}{memory_instruction}\n\n---\n\n# VAULT CONTEXT\n\n{context}"
 
     # User message into history immediately — save so even a failed response isn't lost
     conversations[lane].append({"role": "user", "content": body.message})
@@ -171,7 +195,7 @@ async def chat(lane: str, body: ChatRequest):
                             # Emit working indicator to UI
                             yield f"data: {json.dumps({'tool_working': {'name': block.name, 'input': block.input}})}\n\n"
 
-                            result = execute_tool(block.name, block.input)
+                            result = execute_tool(block.name, block.input, lane=lane)
 
                             # Emit done indicator to UI
                             yield f"data: {json.dumps({'tool_done': {'name': block.name, **result}})}\n\n"

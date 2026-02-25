@@ -407,6 +407,28 @@ TOOLS = [
         },
     },
     {
+        "name": "update_memory",
+        "description": (
+            "Update your private memory with something worth remembering about Greg or your lane. "
+            "Use this proactively to log preferences, patterns, facts, decisions, and observations "
+            "that should persist across conversations. Your memory is private — other agents cannot "
+            "read it. Write notes your future self will actually find useful, not vague summaries."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "note": {
+                    "type": "string",
+                    "description": (
+                        "What to remember. Be specific. Good: 'Greg prefers blunt feedback over encouragement.' "
+                        "Bad: 'Greg talked about his feelings.' One clear fact or observation per call."
+                    ),
+                },
+            },
+            "required": ["note"],
+        },
+    },
+    {
         "name": "list_notes",
         "description": "List existing notes in a vault lane. Use to check what's already been logged before creating a duplicate.",
         "input_schema": {

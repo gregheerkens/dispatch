@@ -719,6 +719,8 @@ async function sendMessage(laneId) {
               pill.textContent = `↳ updating ${inp.path || '…'}`;
             } else if (n === 'list_notes') {
               pill.textContent = `↳ listing ${inp.lane || '?'}…`;
+            } else if (n === 'update_memory') {
+              pill.textContent = `↳ committing to memory…`;
             } else {
               pill.textContent = `↳ ${n}…`;
             }
