@@ -1,0 +1,60 @@
+# ── Environment ───────────────────────────────────────────────────────────────
+.env
+
+# ── Personal vault notes ──────────────────────────────────────────────────────
+# Daily notes are private
+Daily/
+
+# Lane notes are personal — keep READMEs, exclude everything else
+Jobs/*.md
+!Jobs/README.md
+
+Build/*.md
+!Build/README.md
+
+Learn/*.md
+!Learn/README.md
+
+Home/*.md
+!Home/README.md
+
+Write/*.md
+!Write/README.md
+
+# All Self notes are personal
+Self/*.md
+
+# All agent files are private (memories, history, etc.)
+Agents/
+
+# Tags taxonomy is fine to share
+# Tags.md — included
+
+# ── Obsidian ──────────────────────────────────────────────────────────────────
+.obsidian/workspace
+.obsidian/workspace.json
+.obsidian/workspaces.json
+.obsidian/cache
+.obsidian/plugins/*/data.json
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ── Assets & uploads ─────────────────────────────────────────────────────────
+Assets/
+
+# ── Claude Code ───────────────────────────────────────────────────────────────
+.claude/
+
+# ── Obsidian canvas files ─────────────────────────────────────────────────────
+*.canvas
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+nul

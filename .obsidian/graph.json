@@ -1,0 +1,72 @@
+{
+  "collapse-filter": false,
+  "search": "",
+  "showTags": true,
+  "showAttachments": false,
+  "hideUnresolved": false,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {
+      "query": "tag:#jobs  ",
+      "color": {
+        "a": 1,
+        "rgb": 262399
+      }
+    },
+    {
+      "query": "tag:#build  ",
+      "color": {
+        "a": 1,
+        "rgb": 16086528
+      }
+    },
+    {
+      "query": "tag:#learn  ",
+      "color": {
+        "a": 1,
+        "rgb": 906037
+      }
+    },
+    {
+      "query": "tag:#home  ",
+      "color": {
+        "a": 1,
+        "rgb": 14870026
+      }
+    },
+    {
+      "query": "tag:#write  ",
+      "color": {
+        "a": 1,
+        "rgb": 9371786
+      }
+    },
+    {
+      "query": "tag:#self  ",
+      "color": {
+        "a": 1,
+        "rgb": 13895688
+      }
+    },
+    {
+      "query": "tag:#daily  ",
+      "color": {
+        "a": 1,
+        "rgb": 16754907
+      }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": false,
+  "textFadeMultiplier": -1.7,
+  "nodeSizeMultiplier": 0.7125,
+  "lineSizeMultiplier": 0.891145833333333,
+  "collapse-forces": true,
+  "centerStrength": 0.518713248970312,
+  "repelStrength": 10,
+  "linkStrength": 1,
+  "linkDistance": 250,
+  "scale": 0.7132754626224387,
+  "close": false
+}

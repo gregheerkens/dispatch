@@ -1,0 +1,15 @@
+{
+  "defaultViewMode": "source",
+  "foldHeading": false,
+  "showLineNumber": false,
+  "readableLineLength": true,
+  "strictLineBreaks": false,
+  "newFileLocation": "folder",
+  "newFileFolderPath": "Daily",
+  "attachmentFolderPath": "Assets",
+  "userIgnoreFilters": [
+    "/[aA][tT][tT][aA][cC][hH][mM][eE][nN][tT][sS]/",
+    "/[aA][gG][eE][nN][tT][sS]/",
+    "/[R][E][A][D][M][E]/"
+  ]
+}

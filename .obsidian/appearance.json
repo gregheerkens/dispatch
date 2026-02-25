@@ -1,0 +1,8 @@
+{
+  "theme": "system",
+  "cssTheme": "",
+  "baseFontSize": 16,
+  "enabledCssSnippets": [
+    "dispatch-graph"
+  ]
+}

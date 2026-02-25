@@ -1,0 +1,7 @@
+/* Dispatch — Graph View Overrides
+   Tag nodes default to Obsidian's green, which conflicts with the Learn
+   lane color. Override them to a neutral light gray. */
+
+.graph-view.color-fill-tag {
+  color: #9ca3af;
+}
