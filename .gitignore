@@ -5,23 +5,12 @@
 # Daily notes are private
 Daily/
 
-# Lane notes are personal — keep READMEs, exclude everything else
+# All lane notes are personal — READMEs accumulate PII, exclude everything
 Jobs/*.md
-!Jobs/README.md
-
 Build/*.md
-!Build/README.md
-
 Learn/*.md
-!Learn/README.md
-
 Home/*.md
-!Home/README.md
-
 Write/*.md
-!Write/README.md
-
-# All Self notes are personal
 Self/*.md
 
 # All agent files are private (memories, history, etc.)
