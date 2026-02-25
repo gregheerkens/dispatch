@@ -409,23 +409,24 @@ TOOLS = [
     {
         "name": "update_memory",
         "description": (
-            "Update your private memory with something worth remembering about Greg or your lane. "
-            "Use this proactively to log preferences, patterns, facts, decisions, and observations "
-            "that should persist across conversations. Your memory is private — other agents cannot "
-            "read it. Write notes your future self will actually find useful, not vague summaries."
+            "Rewrite your private memory. Your current memory is shown in YOUR PRIVATE MEMORY above — "
+            "use it as the base. Prefer editing and consolidating existing entries over adding new ones. "
+            "Only call this when you have something genuinely new or when an existing entry needs correction. "
+            "Your memory is private — other agents cannot read it."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "note": {
+                "content": {
                     "type": "string",
                     "description": (
-                        "What to remember. Be specific. Good: 'Greg prefers blunt feedback over encouragement.' "
-                        "Bad: 'Greg talked about his feelings.' One clear fact or observation per call."
+                        "The full updated memory content. Take your current memory, edit what changed, "
+                        "consolidate redundant entries, and write the refined result. "
+                        "Keep it tight — a sharp 200-word memory beats a bloated 2000-word log."
                     ),
                 },
             },
-            "required": ["note"],
+            "required": ["content"],
         },
     },
     {

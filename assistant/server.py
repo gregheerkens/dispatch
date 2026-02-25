@@ -70,20 +70,10 @@ def execute_tool(name: str, tool_input: dict, lane: str = "dispatch") -> dict:
     """Execute a tool call and return a result dict."""
     try:
         if name == "update_memory":
-            note = tool_input.get("note", "").strip()
-            if not note:
-                return {"success": False, "message": "Note cannot be empty"}
-            from datetime import datetime
-            existing = vault.agent_memory(lane) or ""
-            entry = f"\n| {datetime.now().strftime('%Y-%m-%d')} | {note} |"
-            if "## Memory Log" in existing:
-                updated = existing.rstrip() + entry + "\n"
-            else:
-                updated = (
-                    existing.rstrip()
-                    + f"\n\n## Memory Log\n| Date | Note |\n|------|------|\n{entry}\n"
-                )
-            vault.update_agent_memory(lane, updated)
+            content = tool_input.get("content", "").strip()
+            if not content:
+                return {"success": False, "message": "Content cannot be empty"}
+            vault.update_agent_memory(lane, content)
             return {"success": True, "message": "Memory updated"}
 
         elif name == "create_note":
@@ -156,10 +146,11 @@ async def chat(lane: str, body: ChatRequest):
     memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
     memory_instruction = (
         "\n\n---\n\n# MEMORY TOOL\n\n"
-        "You have an `update_memory` tool. Use it during conversations to log things worth "
-        "remembering — Greg's preferences, patterns, decisions, and observations specific to "
-        "your lane. Your memory is private to you and persists across all conversations. "
-        "Call it whenever you learn something your future self should know."
+        "You have an `update_memory` tool. Use it to maintain your private memory as a living document. "
+        "When you learn something new or something changes, take your current memory, edit it in place, "
+        "consolidate anything redundant, and write the refined result back. "
+        "Prefer editing over appending — a tight, accurate memory beats a growing log. "
+        "Call it when something is genuinely worth carrying forward, not after every exchange."
     )
     system = f"{agent['system']}{memory_block}{memory_instruction}\n\n---\n\n# VAULT CONTEXT\n\n{context}"
 
