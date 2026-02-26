@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -372,7 +373,6 @@ async def standup():
 async def remember(body: RememberRequest):
     if body.lane not in AGENTS:
         raise HTTPException(404, f"Unknown lane: {body.lane}")
-    from datetime import datetime
     existing = vault.agent_memory(body.lane) or ""
     entry = f"\n| {datetime.now().strftime('%Y-%m-%d')} | {body.note} |"
     if "## Conversation Log" in existing:
