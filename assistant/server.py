@@ -30,6 +30,17 @@ API_KEY    = os.getenv("ANTHROPIC_API_KEY")
 # Per-lane conversation histories (in-memory, session-scoped)
 conversations: dict[str, list] = {lane: [] for lane in AGENTS}
 
+# Roster block — injected into every system prompt so agents know who else exists
+ROSTER_BLOCK = (
+    "\n\n---\n\n# LANE OFFICERS\n\n"
+    "The following officers exist in this system. "
+    "Use their exact names (all caps) when sending cross-lane messages:\n\n"
+    + "\n".join(
+        f"- **{key.upper()}** — {agent['description']}"
+        for key, agent in AGENTS.items()
+    )
+)
+
 vault:  Vault | None = None
 client: anthropic.AsyncAnthropic | None = None
 
@@ -152,7 +163,7 @@ async def chat(lane: str, body: ChatRequest):
         "Prefer editing over appending — a tight, accurate memory beats a growing log. "
         "Call it when something is genuinely worth carrying forward, not after every exchange."
     )
-    system = f"{agent['system']}{memory_block}{memory_instruction}\n\n---\n\n# VAULT CONTEXT\n\n{context}"
+    system = f"{agent['system']}{memory_block}{memory_instruction}{ROSTER_BLOCK}\n\n---\n\n# VAULT CONTEXT\n\n{context}"
 
     # User message into history immediately — save so even a failed response isn't lost
     conversations[lane].append({"role": "user", "content": body.message})
@@ -276,7 +287,7 @@ async def standup():
 
         memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
         system = (
-            f"{agent['system']}{memory_block}\n\n"
+            f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
             f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
             f"---\n\n# YOUR LANE NOTES\n\n{lane_context}"
         )
@@ -309,7 +320,7 @@ async def standup():
         )
         memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
         system = (
-            f"{agent['system']}{memory_block}\n\n"
+            f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
             f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
             f"---\n\n# LANE AGENT REPORTS\n\n{reports_block}"
         )
