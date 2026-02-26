@@ -253,6 +253,7 @@ async def standup():
     Total token cost ≈ single full-vault dispatch call.
     """
     LANE_IDS = ['jobs', 'build', 'learn', 'home', 'write', 'self']
+    NOW = datetime.now().strftime("%A, %B %d, %Y %H:%M")
     STANDUP_PROMPT = (
         "It's standup time. Report on your lane using markdown formatting.\n\n"
         "**Status** — 2-3 sentences on current state.\n\n"
@@ -276,6 +277,7 @@ async def standup():
         memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
         system = (
             f"{agent['system']}{memory_block}\n\n"
+            f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
             f"---\n\n# YOUR LANE NOTES\n\n{lane_context}"
         )
         try:
@@ -308,6 +310,7 @@ async def standup():
         memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
         system = (
             f"{agent['system']}{memory_block}\n\n"
+            f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
             f"---\n\n# LANE AGENT REPORTS\n\n{reports_block}"
         )
         synthesis_prompt = (
