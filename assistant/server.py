@@ -320,9 +320,14 @@ async def standup():
             for lid, rpt in reports.items()
         )
         memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
+        last = vault.last_standup()
+        last_standup_block = (
+            f"\n\n---\n\n# PREVIOUS STANDUP\n\n{last.content}" if last else ""
+        )
         system = (
             f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
             f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
+            f"{last_standup_block}"
             f"---\n\n# LANE AGENT REPORTS\n\n{reports_block}"
         )
         synthesis_prompt = (

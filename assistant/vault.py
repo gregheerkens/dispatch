@@ -86,6 +86,19 @@ class Vault:
                 return note
         return None
 
+    def last_standup(self) -> Optional[VaultNote]:
+        """Return the most recent standup note that is not from today."""
+        today = datetime.now().strftime("%Y-%m-%d")
+        standups = [
+            n for n in self.notes
+            if n.lane == "Daily"
+            and "standup" in n.path.name
+            and today not in n.path.name
+        ]
+        if not standups:
+            return None
+        return sorted(standups, key=lambda n: n.path.name, reverse=True)[0]
+
     def write_standup_note(self, reports: dict[str, str], synthesis: str) -> str:
         """
         Save standup minutes to Daily/YYYY-MM-DD-standup.md.
