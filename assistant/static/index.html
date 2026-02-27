@@ -16,12 +16,13 @@
     --dimmer:   #27272a;
     --input-bg: #141414;
 
-    --jobs:   #3b82f6;
-    --build:  #f97316;
-    --learn:  #22c55e;
-    --home:   #eab308;
-    --write:  #a855f7;
-    --self:   #f43f5e;
+    --jobs:    #3b82f6;
+    --build:   #f97316;
+    --learn:   #22c55e;
+    --home:    #eab308;
+    --write:   #a855f7;
+    --self:    #f43f5e;
+    --finance: #10b981;
   }
 
   html, body {
@@ -502,11 +503,46 @@
   </div>
   <span class="vault-status" id="vaultStatus">connecting...</span>
   <div class="header-actions">
+    <button class="btn" style="border-color:var(--finance);color:var(--finance)" onclick="openFinance()">💰 FINANCE</button>
     <button id="standupBtn" class="btn primary" onclick="runStandup()">STANDUP</button>
   </div>
 </header>
 
 <main class="lanes" id="lanes"></main>
+
+<!-- Finance modal -->
+<div class="overlay" id="financeOverlay" style="display:none" onclick="financeClickOutside(event)">
+  <div class="overlay-panel" style="--lane-color:var(--finance);width:min(640px,90vw);height:min(600px,85vh)">
+    <div class="overlay-header">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="font-size:15px">💰</span>
+        <span class="overlay-title" style="color:var(--finance)">FINANCE OFFICER</span>
+      </div>
+      <button class="overlay-close" onclick="closeFinance()">✕</button>
+    </div>
+    <div class="messages" id="financeMessages" style="flex:1;min-height:0">
+      <div class="empty-hint">Ask about money. Offer math, burn rate, runway, crypto.</div>
+    </div>
+    <div class="input-area" style="border-top:1px solid var(--border)">
+      <textarea
+        id="financeInput"
+        placeholder="Message Finance Officer..."
+        onkeydown="handleFinanceKey(event)"
+        oninput="autoResize(this)"
+        autocomplete="off"
+        spellcheck="false"
+        rows="1"
+      ></textarea>
+      <button class="send-btn" onclick="sendFinanceMessage()" title="Send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
 
 <!-- Standup overlay -->
 <div class="overlay" id="standupOverlay" style="display:none" onclick="overlayClickOutside(event)">
@@ -897,7 +933,7 @@ function overlayClickOutside(e) {
 }
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeStandup();
+  if (e.key === 'Escape') { closeStandup(); closeFinance(); }
 });
 
 // ── History restore ───────────────────────────────────────────────────────────
@@ -952,6 +988,124 @@ async function pollStatus() {
       `${data.notes} notes in vault`;
   } catch {
     document.getElementById('vaultStatus').textContent = 'vault offline';
+  }
+}
+
+// ── Finance ───────────────────────────────────────────────────────────────────
+function openFinance() {
+  document.getElementById('financeOverlay').style.display = 'flex';
+  document.getElementById('financeInput').focus();
+}
+
+function closeFinance() {
+  document.getElementById('financeOverlay').style.display = 'none';
+}
+
+function financeClickOutside(e) {
+  if (e.target === document.getElementById('financeOverlay')) closeFinance();
+}
+
+function handleFinanceKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendFinanceMessage();
+  }
+}
+
+async function sendFinanceMessage() {
+  const input = document.getElementById('financeInput');
+  const msgs  = document.getElementById('financeMessages');
+  const text  = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  input.disabled = true;
+
+  const hint = msgs.querySelector('.empty-hint');
+  if (hint) hint.remove();
+
+  const userDiv = document.createElement('div');
+  userDiv.className = 'message user';
+  userDiv.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+  msgs.appendChild(userDiv);
+  scrollBottom(msgs);
+
+  const agentDiv = document.createElement('div');
+  agentDiv.className = 'message agent';
+  agentDiv.style.setProperty('--lane-color', 'var(--finance)');
+  agentDiv.innerHTML = `
+    <div class="bubble">
+      <div class="tool-actions"></div>
+      <div class="agent-text"></div>
+      <span class="cursor" style="background:var(--finance)"></span>
+    </div>`;
+  msgs.appendChild(agentDiv);
+  scrollBottom(msgs);
+
+  const bubble    = agentDiv.querySelector('.bubble');
+  const actionsEl = bubble.querySelector('.tool-actions');
+  const textEl    = bubble.querySelector('.agent-text');
+  let buffer = '';
+
+  try {
+    const res = await fetch('/api/chat/finance', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+    if (!res.ok) throw new Error(`Server error: ${res.status}`);
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const lines = decoder.decode(value, { stream: true }).split('\n');
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+
+          if (data.tool_working) {
+            const pill = document.createElement('div');
+            pill.className = 'tool-pill working';
+            const n = data.tool_working.name, inp = data.tool_working.input || {};
+            if (n === 'create_note')   pill.textContent = `↳ creating ${inp.lane || '?'} / ${inp.title || '…'}`;
+            else if (n === 'update_note')   pill.textContent = `↳ updating ${inp.path || '…'}`;
+            else if (n === 'list_notes')    pill.textContent = `↳ listing ${inp.lane || '?'}…`;
+            else if (n === 'update_memory') pill.textContent = `↳ committing to memory…`;
+            else pill.textContent = `↳ ${n}…`;
+            actionsEl.appendChild(pill);
+            scrollBottom(msgs);
+          }
+
+          if (data.tool_done) {
+            const pills = actionsEl.querySelectorAll('.tool-pill.working');
+            const pill  = pills[pills.length - 1];
+            if (pill) {
+              pill.className   = data.tool_done.success ? 'tool-pill done' : 'tool-pill error';
+              pill.textContent = data.tool_done.success
+                ? `✓ ${data.tool_done.path || data.tool_done.message}`
+                : `✗ ${data.tool_done.message}`;
+            }
+            scrollBottom(msgs);
+          }
+
+          if (data.text)  { buffer += data.text; textEl.innerHTML = renderMarkdown(buffer); scrollBottom(msgs); }
+          if (data.error) { textEl.innerHTML = `<em style="color:#f43f5e">${data.error}</em>`; }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    textEl.innerHTML = `<em style="color:#f43f5e">Connection error: ${err.message}</em>`;
+  } finally {
+    const cursor = bubble.querySelector('.cursor');
+    if (cursor) cursor.remove();
+    input.disabled = false;
+    input.focus();
   }
 }
 

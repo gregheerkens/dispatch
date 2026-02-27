@@ -2,7 +2,7 @@
 
 A personal command center built on Obsidian and Claude.
 
-Six lanes. One standup. One assistant that knows your actual life.
+Six lanes plus a Finance Officer. One standup. One assistant that knows your actual life.
 
 ---
 
@@ -29,6 +29,10 @@ The result is an assistant that doesn't start from zero every conversation — i
 
 Each lane has its own agent with a focused system prompt and a private memory file that persists observations about you across sessions.
 
+### Finance Officer
+
+A seventh agent operates at a different tier. The Finance Officer reads across all lanes (money touches everything), participates in the standup, and is accessible via a dedicated modal in the web UI rather than a persistent column. Its memory file is a financial ledger — burn rate, runway, salary floor, crypto position — kept current and used as the basis for offer math and cross-lane financial flags.
+
 ---
 
 ## Architecture
@@ -36,12 +40,12 @@ Each lane has its own agent with a focused system prompt and a private memory fi
 ```
 Dispatch/
 ├── assistant/
-│   ├── agents.py       — Lane agent definitions and system prompts
+│   ├── agents.py       — Agent definitions and system prompts (6 lane + Finance + Dispatch)
 │   ├── vault.py        — Vault reader and context builder (the RAG layer)
 │   ├── dispatch.py     — CLI interface
 │   ├── server.py       — FastAPI web server
 │   └── static/
-│       └── index.html  — 6-column web UI
+│       └── index.html  — 6-column web UI + Finance modal
 ├── Templates/          — Obsidian templates with YAML frontmatter
 ├── Jobs/               — Job applications (Dataview-queryable)
 ├── Build/              — Projects
@@ -49,6 +53,7 @@ Dispatch/
 ├── Home/               — Maintenance items
 ├── Write/              — Writing pipeline
 ├── Self/               — Personal notes
+├── Finance/            — Financial documents (offer analysis, budgets, snapshots)
 ├── Daily/              — Daily notes and standup minutes
 ├── Agents/             — Private per-agent memory files (gitignored)
 └── Tags.md             — Tag taxonomy reference
@@ -56,7 +61,7 @@ Dispatch/
 
 ### How the RAG works
 
-The vault reader loads all markdown files at startup. Each note's content, lane, and metadata is available to the assistant. When you send a message, the relevant lane's notes are packed into the Claude context window alongside the agent's system prompt and private memory. The standup runs all six agents in parallel against their own lane slices, then streams a cross-lane synthesis.
+The vault reader loads all markdown files at startup. Each note's content, lane, and metadata is available to the assistant. When you send a message, the relevant lane's notes are packed into the Claude context window alongside the agent's system prompt and private memory. The standup runs all seven agents in parallel — lane officers see their own notes, Finance sees the full vault — then streams a cross-lane synthesis.
 
 ### Dataview
 
@@ -119,9 +124,9 @@ python assistant/dispatch.py                 # general dispatch mode
 
 The morning standup is two phases:
 
-**Phase 1** — Six lane agents run in parallel. Each reads only their own lane notes (~2-3k tokens each). They report in 3 sentences: status, most important thing, cross-lane flags.
+**Phase 1** — Seven agents run in parallel. The six lane officers each read only their own lane notes (~2-3k tokens each). The Finance Officer reads the full vault. Each reports in 3 sentences: status, most important thing, cross-lane flags.
 
-**Phase 2** — Dispatch reads all six reports and streams a cross-lane synthesis: dependencies, top 3 priorities, anything being avoided.
+**Phase 2** — Dispatch reads all seven reports and streams a cross-lane synthesis: dependencies, top 3 priorities, anything being avoided.
 
 Reports appear in each lane column. The synthesis streams into an overlay. The full standup is saved as a dated note in `Daily/` with proper frontmatter and callout blocks.
 

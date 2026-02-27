@@ -12,6 +12,7 @@ Learn/*.md
 Home/*.md
 Write/*.md
 Self/*.md
+Finance/*.md
 
 # All agent files are private (memories, history, etc.)
 Agents/

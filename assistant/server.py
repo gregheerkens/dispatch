@@ -152,7 +152,7 @@ async def chat(lane: str, body: ChatRequest):
 
     agent   = get_agent(lane)
     memory  = vault.agent_memory(lane) or ""
-    focus   = [lane.capitalize()] if lane != "dispatch" else None
+    focus   = [lane.capitalize()] if lane not in ("dispatch", "finance") else None
     context = vault.build_context(focus_lanes=focus)
 
     memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
@@ -168,10 +168,11 @@ async def chat(lane: str, body: ChatRequest):
 
     # User message into history immediately — save so even a failed response isn't lost
     conversations[lane].append({"role": "user", "content": body.message})
-    try:
-        vault.save_history(lane, conversations[lane])
-    except Exception:
-        pass
+    if lane != "finance":
+        try:
+            vault.save_history(lane, conversations[lane])
+        except Exception:
+            pass
     # API context: recent 8 messages for token efficiency (vault provides the rest)
     base_history = list(conversations[lane][-8:])
 
@@ -230,10 +231,11 @@ async def chat(lane: str, body: ChatRequest):
                 for turn in new_turns:
                     conversations[lane].append(turn)
                 conversations[lane] = conversations[lane][-100:]
-                try:
-                    vault.save_history(lane, conversations[lane])
-                except Exception:
-                    pass  # don't let a disk error kill the response
+                if lane != "finance":
+                    try:
+                        vault.save_history(lane, conversations[lane])
+                    except Exception:
+                        pass  # don't let a disk error kill the response
 
                 # Stream text in chunks
                 chunk_size = 12
@@ -264,7 +266,7 @@ async def standup():
 
     Total token cost ≈ single full-vault dispatch call.
     """
-    LANE_IDS = ['jobs', 'build', 'learn', 'home', 'write', 'self']
+    LANE_IDS = ['jobs', 'build', 'learn', 'home', 'write', 'self', 'finance']
     NOW = datetime.now().strftime("%A, %B %d, %Y %H:%M")
     STANDUP_PROMPT = (
         "It's standup time. Report on your lane using markdown formatting.\n\n"
@@ -280,18 +282,27 @@ async def standup():
         agent  = get_agent(lane_id)
         memory = vault.agent_memory(lane_id) or ""
 
-        # Only this lane's notes — not the full vault
-        lane_notes = vault.by_lane(lane_id.capitalize())
-        lane_context = "\n\n".join(
-            f"### {n.title}\n{n.content}" for n in lane_notes
-        ) or "No notes in this lane yet."
-
         memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
-        system = (
-            f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
-            f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
-            f"---\n\n# YOUR LANE NOTES\n\n{lane_context}"
-        )
+
+        if lane_id == "finance":
+            # Finance reads the full vault — money touches every lane
+            full_context = vault.build_context(focus_lanes=None)
+            system = (
+                f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
+                f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
+                f"---\n\n# VAULT CONTEXT\n\n{full_context}"
+            )
+        else:
+            # Lane officers see only their own notes (~2-3k tokens each)
+            lane_notes = vault.by_lane(lane_id.capitalize())
+            lane_context = "\n\n".join(
+                f"### {n.title}\n{n.content}" for n in lane_notes
+            ) or "No notes in this lane yet."
+            system = (
+                f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
+                f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
+                f"---\n\n# YOUR LANE NOTES\n\n{lane_context}"
+            )
         try:
             msg = await client.messages.create(
                 model="claude-sonnet-4-6", max_tokens=400,
@@ -331,7 +342,7 @@ async def standup():
             f"---\n\n# LANE AGENT REPORTS\n\n{reports_block}"
         )
         synthesis_prompt = (
-            "You've received standup reports from all 6 lane officers. "
+            "You've received standup reports from all lane officers. "
             "Produce a complete synthesis with these sections:\n\n"
             "## Cross-Lane Messages\n"
             "Explicit asks or flags between lane officers, drawn from their reports. "

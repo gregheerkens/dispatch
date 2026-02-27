@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 
-LANE_ORDER = ["Jobs", "Build", "Learn", "Home", "Write", "Self", "Daily"]
+LANE_ORDER = ["Jobs", "Build", "Learn", "Home", "Write", "Self", "Finance", "Daily"]
 
 IGNORE_DIRS = {".obsidian", ".git", "Assets", "Templates", "__pycache__", "Agents"}
 
@@ -111,12 +111,13 @@ class Vault:
         path      = self.root / "Daily" / filename
 
         LANE_META = {
-            "jobs":  ("💼", "Jobs",  "info"),
-            "build": ("🔨", "Build", "warning"),
-            "learn": ("📚", "Learn", "success"),
-            "home":  ("🏠", "Home",  "question"),
-            "write": ("✍️", "Write", "abstract"),
-            "self":  ("💪", "Self",  "danger"),
+            "jobs":    ("💼", "Jobs",    "info"),
+            "build":   ("🔨", "Build",   "warning"),
+            "learn":   ("📚", "Learn",   "success"),
+            "home":    ("🏠", "Home",    "question"),
+            "write":   ("✍️", "Write",  "abstract"),
+            "self":    ("💪", "Self",    "danger"),
+            "finance": ("💰", "Finance", "tip"),
         }
 
         lane_blocks = []

@@ -46,6 +46,7 @@ def init_folders():
         ROOT / "Daily",
         ROOT / "Templates",
         ROOT / "Assets",
+        ROOT / "Finance",
         ROOT / "Agents" / "dispatch",
         ROOT / "Agents" / "jobs",
         ROOT / "Agents" / "build",
@@ -53,6 +54,7 @@ def init_folders():
         ROOT / "Agents" / "home",
         ROOT / "Agents" / "write",
         ROOT / "Agents" / "self",
+        ROOT / "Agents" / "finance",
         ROOT / "assistant" / "static",
         ROOT / ".obsidian",
     ]
@@ -335,9 +337,42 @@ tags:
 
 """, force)
 
+    write(ROOT / "Finance" / "README.md", f"""---
+type: reference
+lane: finance
+tags:
+  - finance
+  - reference
+---
+
+# Finance Lane
+
+## Current State
+| | |
+|-|-----|
+| Monthly burn | |
+| Monthly income | |
+| Net gap | |
+| Liquid savings | |
+| Runway | |
+| ETH | |
+
+## Documents
+
+```dataview
+TABLE date, type
+FROM "Finance"
+WHERE type != "reference"
+SORT date DESC
+```
+
+## Notes
+
+""", force)
+
 
 def init_agent_memories(name: str, force: bool):
-    LANES = ["dispatch", "jobs", "build", "learn", "home", "write", "self"]
+    LANES = ["dispatch", "jobs", "build", "learn", "home", "write", "self", "finance"]
     LANE_DESCRIPTIONS = {
         "dispatch": "Cross-lane coordinator. Sees everything.",
         "jobs":     "Job search — applications, contacts, follow-ups.",
@@ -346,10 +381,42 @@ def init_agent_memories(name: str, force: bool):
         "home":     "House as a system — maintenance, vendors, property.",
         "write":    "Writing pipeline — ideas, drafts, publishing.",
         "self":     "The person running all of this.",
+        "finance":  "Financial reality across all lanes. Burn rate, runway, offer math, crypto.",
     }
     today = datetime.now().strftime("%Y-%m-%d")
     for lane in LANES:
-        write(ROOT / "Agents" / lane / "memory.md", f"""# {lane.capitalize()} Agent — Memory
+        if lane == "finance":
+            write(ROOT / "Agents" / "finance" / "memory.md", f"""# Finance Officer — Memory Ledger
+
+## Monthly Burn Rate
+- Total: unknown
+
+## Income
+- unknown
+
+## Savings & Runway
+- Liquid savings: unknown
+- Runway: unknown
+
+## Crypto
+- ETH held: unknown
+- Price basis: unknown
+- Current strategy: unknown
+
+## Salary Floor
+- Minimum acceptable gross: unknown
+
+## Fixed Costs
+- Housing: unknown
+- Healthcare: unknown
+- Kids: unknown
+- Vehicles: unknown
+- Other recurring: unknown
+
+## Notes
+""", force)
+        else:
+            write(ROOT / "Agents" / lane / "memory.md", f"""# {lane.capitalize()} Agent — Memory
 
 *Private. Not shared with other agents.*
 *{LANE_DESCRIPTIONS[lane]}*
@@ -404,6 +471,9 @@ tags:
 - [ ]
 
 ### 💪 Self
+- [ ]
+
+### 💰 Finance
 - [ ]
 
 ---
