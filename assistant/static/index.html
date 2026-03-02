@@ -379,6 +379,24 @@
     background: var(--dimmer); padding: 1px 5px; border-radius: 3px;
   }
 
+  /* Resend button (shown on error) */
+  .resend-btn {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 3px 9px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    background: none;
+    border: 1px solid #f43f5e;
+    color: #f43f5e;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.15s;
+  }
+  .resend-btn:hover { background: color-mix(in srgb, #f43f5e 10%, transparent); }
+
   /* Empty state */
   .empty-hint {
     color: var(--dimmer);
@@ -703,27 +721,38 @@ function escapeHtml(text) {
 }
 
 // ── Send + stream ─────────────────────────────────────────────────────────────
-async function sendMessage(laneId) {
-  const input = document.getElementById(`input-${laneId}`);
-  const text = input.value.trim();
+async function sendMessage(laneId, retryText = null) {
+  const input   = document.getElementById(`input-${laneId}`);
+  const isRetry = retryText !== null;
+  const text    = isRetry ? retryText : input.value.trim();
   if (!text) return;
 
-  input.value = '';
-  input.style.height = 'auto';
+  if (!isRetry) {
+    input.value = '';
+    input.style.height = 'auto';
+    addUserMessage(laneId, text);
+  }
   input.disabled = true;
 
-  addUserMessage(laneId, text);
-  const bubble = addAgentMessage(laneId);
+  const bubble    = addAgentMessage(laneId);
   const actionsEl = bubble.querySelector('.tool-actions');
   const textEl    = bubble.querySelector('.agent-text');
-
   let buffer = '';
+
+  const showError = (msg) => {
+    textEl.innerHTML = `<em style="color:#f43f5e">${msg}</em>`;
+    const btn = document.createElement('button');
+    btn.className = 'resend-btn';
+    btn.textContent = '↺ RESEND';
+    btn.onclick = () => { bubble.closest('.message').remove(); sendMessage(laneId, text); };
+    textEl.after(btn);
+  };
 
   try {
     const res = await fetch(`/api/chat/${laneId}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, retry: isRetry }),
     });
 
     if (!res.ok) throw new Error(`Server error: ${res.status}`);
@@ -766,7 +795,6 @@ async function sendMessage(laneId) {
           }
 
           if (data.tool_done) {
-            // Find the last working pill and resolve it
             const pills = actionsEl.querySelectorAll('.tool-pill.working');
             const pill = pills[pills.length - 1];
             if (pill) {
@@ -789,14 +817,12 @@ async function sendMessage(laneId) {
             scrollBottom(msgs);
           }
 
-          if (data.error) {
-            textEl.innerHTML = `<em style="color:#f43f5e">${data.error}</em>`;
-          }
+          if (data.error) { showError(data.error); }
         } catch {}
       }
     }
   } catch (err) {
-    textEl.innerHTML = `<em style="color:#f43f5e">Connection error: ${err.message}</em>`;
+    showError(`Connection error: ${err.message}`);
   } finally {
     const cursor = bubble.querySelector('.cursor');
     if (cursor) cursor.remove();
@@ -1012,24 +1038,25 @@ function handleFinanceKey(e) {
   }
 }
 
-async function sendFinanceMessage() {
-  const input = document.getElementById('financeInput');
-  const msgs  = document.getElementById('financeMessages');
-  const text  = input.value.trim();
+async function sendFinanceMessage(retryText = null) {
+  const input   = document.getElementById('financeInput');
+  const msgs    = document.getElementById('financeMessages');
+  const isRetry = retryText !== null;
+  const text    = isRetry ? retryText : input.value.trim();
   if (!text) return;
 
-  input.value = '';
-  input.style.height = 'auto';
+  if (!isRetry) {
+    input.value = '';
+    input.style.height = 'auto';
+    const hint = msgs.querySelector('.empty-hint');
+    if (hint) hint.remove();
+    const userDiv = document.createElement('div');
+    userDiv.className = 'message user';
+    userDiv.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+    msgs.appendChild(userDiv);
+    scrollBottom(msgs);
+  }
   input.disabled = true;
-
-  const hint = msgs.querySelector('.empty-hint');
-  if (hint) hint.remove();
-
-  const userDiv = document.createElement('div');
-  userDiv.className = 'message user';
-  userDiv.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
-  msgs.appendChild(userDiv);
-  scrollBottom(msgs);
 
   const agentDiv = document.createElement('div');
   agentDiv.className = 'message agent';
@@ -1048,11 +1075,20 @@ async function sendFinanceMessage() {
   const textEl    = bubble.querySelector('.agent-text');
   let buffer = '';
 
+  const showError = (msg) => {
+    textEl.innerHTML = `<em style="color:#f43f5e">${msg}</em>`;
+    const btn = document.createElement('button');
+    btn.className = 'resend-btn';
+    btn.textContent = '↺ RESEND';
+    btn.onclick = () => { bubble.closest('.message').remove(); sendFinanceMessage(text); };
+    textEl.after(btn);
+  };
+
   try {
     const res = await fetch('/api/chat/finance', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, retry: isRetry }),
     });
     if (!res.ok) throw new Error(`Server error: ${res.status}`);
 
@@ -1095,12 +1131,12 @@ async function sendFinanceMessage() {
           }
 
           if (data.text)  { buffer += data.text; textEl.innerHTML = renderMarkdown(buffer); scrollBottom(msgs); }
-          if (data.error) { textEl.innerHTML = `<em style="color:#f43f5e">${data.error}</em>`; }
+          if (data.error) { showError(data.error); }
         } catch {}
       }
     }
   } catch (err) {
-    textEl.innerHTML = `<em style="color:#f43f5e">Connection error: ${err.message}</em>`;
+    showError(`Connection error: ${err.message}`);
   } finally {
     const cursor = bubble.querySelector('.cursor');
     if (cursor) cursor.remove();

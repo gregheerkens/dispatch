@@ -70,6 +70,7 @@ app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 class ChatRequest(BaseModel):
     message: str
+    retry: bool = False
 
 class RememberRequest(BaseModel):
     lane: str
@@ -166,13 +167,14 @@ async def chat(lane: str, body: ChatRequest):
     )
     system = f"{agent['system']}{memory_block}{memory_instruction}{ROSTER_BLOCK}\n\n---\n\n# VAULT CONTEXT\n\n{context}"
 
-    # User message into history immediately — save so even a failed response isn't lost
-    conversations[lane].append({"role": "user", "content": body.message})
-    if lane != "finance":
-        try:
-            vault.save_history(lane, conversations[lane])
-        except Exception:
-            pass
+    # User message into history — skip on retry (already present from failed attempt)
+    if not body.retry:
+        conversations[lane].append({"role": "user", "content": body.message})
+        if lane != "finance":
+            try:
+                vault.save_history(lane, conversations[lane])
+            except Exception:
+                pass
     # API context: recent 8 messages for token efficiency (vault provides the rest)
     base_history = list(conversations[lane][-8:])
 
