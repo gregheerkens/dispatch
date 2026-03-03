@@ -22,7 +22,8 @@
     --home:    #eab308;
     --write:   #a855f7;
     --self:    #f43f5e;
-    --finance: #10b981;
+    --finance:  #10b981;
+    --dispatch: #94a3b8;
   }
 
   html, body {
@@ -523,6 +524,7 @@
   <div class="header-actions">
     <button class="btn" style="border-color:var(--finance);color:var(--finance)" onclick="openFinance()">💰 FINANCE</button>
     <button id="standupBtn" class="btn primary" onclick="runStandup()">STANDUP</button>
+    <button class="btn" style="border-color:var(--dispatch);color:var(--dispatch)" onclick="openDebrief()">DEBRIEF</button>
   </div>
 </header>
 
@@ -552,6 +554,42 @@
         rows="1"
       ></textarea>
       <button class="send-btn" onclick="sendFinanceMessage()" title="Send">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <line x1="22" y1="2" x2="11" y2="13"/>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Debrief modal -->
+<div class="overlay" id="debriefOverlay" style="display:none" onclick="debriefClickOutside(event)">
+  <div class="overlay-panel" style="--lane-color:var(--dispatch);width:min(680px,90vw);height:min(640px,85vh)">
+    <div class="overlay-header">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="overlay-title" style="color:var(--dispatch)">🎯 DISPATCH DEBRIEF</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="btn" style="font-size:9px;padding:3px 8px;border-color:var(--dimmer);color:var(--dim)" onclick="clearDebrief()">NEW SESSION</button>
+        <button class="overlay-close" onclick="closeDebrief()">✕</button>
+      </div>
+    </div>
+    <div class="messages" id="debriefMessages" style="flex:1;min-height:0">
+      <div class="empty-hint">Tell Dispatch what actually happened.<br>It will correct the officers' records directly.</div>
+    </div>
+    <div class="input-area" style="border-top:1px solid var(--border)">
+      <textarea
+        id="debriefInput"
+        placeholder="What actually happened? What did you get done? What do the officers have wrong?"
+        onkeydown="handleDebriefKey(event)"
+        oninput="autoResize(this)"
+        autocomplete="off"
+        spellcheck="false"
+        rows="1"
+      ></textarea>
+      <button class="send-btn" onclick="sendDebriefMessage()" title="Send">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
           <line x1="22" y1="2" x2="11" y2="13"/>
@@ -959,7 +997,7 @@ function overlayClickOutside(e) {
 }
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeStandup(); closeFinance(); }
+  if (e.key === 'Escape') { closeStandup(); closeFinance(); closeDebrief(); }
 });
 
 // ── History restore ───────────────────────────────────────────────────────────
@@ -1014,6 +1052,137 @@ async function pollStatus() {
       `${data.notes} notes in vault`;
   } catch {
     document.getElementById('vaultStatus').textContent = 'vault offline';
+  }
+}
+
+// ── Debrief ───────────────────────────────────────────────────────────────────
+function openDebrief() {
+  document.getElementById('debriefOverlay').style.display = 'flex';
+  document.getElementById('debriefInput').focus();
+}
+
+function closeDebrief() {
+  document.getElementById('debriefOverlay').style.display = 'none';
+}
+
+function debriefClickOutside(e) {
+  if (e.target === document.getElementById('debriefOverlay')) closeDebrief();
+}
+
+function handleDebriefKey(e) {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendDebriefMessage(); }
+}
+
+async function clearDebrief() {
+  await fetch('/api/debrief', { method: 'DELETE' });
+  const msgs = document.getElementById('debriefMessages');
+  msgs.innerHTML = '<div class="empty-hint">Tell Dispatch what actually happened.<br>It will correct the officers\' records directly.</div>';
+}
+
+async function sendDebriefMessage(retryText = null) {
+  const input   = document.getElementById('debriefInput');
+  const msgs    = document.getElementById('debriefMessages');
+  const isRetry = retryText !== null;
+  const text    = isRetry ? retryText : input.value.trim();
+  if (!text) return;
+
+  if (!isRetry) {
+    input.value = '';
+    input.style.height = 'auto';
+    const hint = msgs.querySelector('.empty-hint');
+    if (hint) hint.remove();
+    const userDiv = document.createElement('div');
+    userDiv.className = 'message user';
+    userDiv.innerHTML = `<div class="bubble">${escapeHtml(text)}</div>`;
+    msgs.appendChild(userDiv);
+    scrollBottom(msgs);
+  }
+  input.disabled = true;
+
+  const agentDiv = document.createElement('div');
+  agentDiv.className = 'message agent';
+  agentDiv.style.setProperty('--lane-color', 'var(--dispatch)');
+  agentDiv.innerHTML = `
+    <div class="bubble">
+      <div class="tool-actions"></div>
+      <div class="agent-text"></div>
+      <span class="cursor" style="background:var(--dispatch)"></span>
+    </div>`;
+  msgs.appendChild(agentDiv);
+  scrollBottom(msgs);
+
+  const bubble    = agentDiv.querySelector('.bubble');
+  const actionsEl = bubble.querySelector('.tool-actions');
+  const textEl    = bubble.querySelector('.agent-text');
+  let buffer = '';
+
+  const showError = (msg) => {
+    textEl.innerHTML = `<em style="color:#f43f5e">${msg}</em>`;
+    const btn = document.createElement('button');
+    btn.className = 'resend-btn';
+    btn.textContent = '↺ RESEND';
+    btn.onclick = () => { bubble.closest('.message').remove(); sendDebriefMessage(text); };
+    textEl.after(btn);
+  };
+
+  try {
+    const res = await fetch('/api/debrief', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, retry: isRetry }),
+    });
+    if (!res.ok) throw new Error(`Server error: ${res.status}`);
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      const lines = decoder.decode(value, { stream: true }).split('\n');
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+
+          if (data.tool_working) {
+            const pill = document.createElement('div');
+            pill.className = 'tool-pill working';
+            const n = data.tool_working.name, inp = data.tool_working.input || {};
+            if (n === 'update_officer_memory') pill.textContent = `↳ updating ${inp.officer || '?'} officer memory…`;
+            else if (n === 'update_note')       pill.textContent = `↳ correcting standup record…`;
+            else if (n === 'update_memory')     pill.textContent = `↳ updating dispatch memory…`;
+            else if (n === 'create_note')       pill.textContent = `↳ creating ${inp.lane || '?'} / ${inp.title || '…'}`;
+            else pill.textContent = `↳ ${n}…`;
+            actionsEl.appendChild(pill);
+            scrollBottom(msgs);
+          }
+
+          if (data.tool_done) {
+            const pills = actionsEl.querySelectorAll('.tool-pill.working');
+            const pill  = pills[pills.length - 1];
+            if (pill) {
+              pill.className   = data.tool_done.success ? 'tool-pill done' : 'tool-pill error';
+              pill.textContent = data.tool_done.success
+                ? `✓ ${data.tool_done.message}`
+                : `✗ ${data.tool_done.message}`;
+            }
+            scrollBottom(msgs);
+          }
+
+          if (data.text)  { buffer += data.text; textEl.innerHTML = renderMarkdown(buffer); scrollBottom(msgs); }
+          if (data.error) { showError(data.error); }
+        } catch {}
+      }
+    }
+  } catch (err) {
+    showError(`Connection error: ${err.message}`);
+  } finally {
+    const cursor = bubble.querySelector('.cursor');
+    if (cursor) cursor.remove();
+    input.disabled = false;
+    input.focus();
   }
 }
 

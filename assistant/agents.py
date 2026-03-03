@@ -491,6 +491,38 @@ TOOLS = [
 ]
 
 
+DEBRIEF_TOOLS = TOOLS + [
+    {
+        "name": "update_officer_memory",
+        "description": (
+            "Rewrite a lane officer's private memory file. "
+            "Use during debrief to correct the record based on what Greg reports actually happened. "
+            "Read the officer's current memory (shown in OFFICER MEMORIES above) first — "
+            "preserve accurate entries, correct wrong ones, add missing ones. "
+            "One call per officer that needs updating. Do not call for officers whose records are already accurate."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "officer": {
+                    "type": "string",
+                    "enum": ["jobs", "build", "learn", "home", "write", "self", "finance"],
+                    "description": "Which officer's memory to rewrite.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": (
+                        "Full updated memory content. Take the officer's current memory, "
+                        "edit what changed, write the result. Keep it tight."
+                    ),
+                },
+            },
+            "required": ["officer", "content"],
+        },
+    }
+]
+
+
 def get_agent(name: str) -> dict:
     return AGENTS.get(name.lower(), AGENTS["dispatch"])
 

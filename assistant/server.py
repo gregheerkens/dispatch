@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
 from vault import Vault
-from agents import get_agent, AGENTS, TOOLS
+from agents import get_agent, AGENTS, TOOLS, DEBRIEF_TOOLS
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
@@ -30,6 +30,9 @@ API_KEY    = os.getenv("ANTHROPIC_API_KEY")
 
 # Per-lane conversation histories (in-memory, session-scoped)
 conversations: dict[str, list] = {lane: [] for lane in AGENTS}
+
+# Debrief conversation (in-memory, session-scoped, not persisted)
+debrief_conversation: list = []
 
 # Roster block — injected into every system prompt so agents know who else exists
 ROSTER_BLOCK = (
@@ -108,6 +111,17 @@ def execute_tool(name: str, tool_input: dict, lane: str = "dispatch") -> dict:
         elif name == "list_notes":
             notes = vault.list_notes(tool_input["lane"])
             return {"success": True, "notes": notes, "message": f"{len(notes)} notes in {tool_input['lane']}"}
+
+        elif name == "update_officer_memory":
+            officer = tool_input.get("officer", "").lower()
+            content = tool_input.get("content", "").strip()
+            valid = ["jobs", "build", "learn", "home", "write", "self", "finance"]
+            if officer not in valid:
+                return {"success": False, "message": f"Unknown officer: {officer}"}
+            if not content:
+                return {"success": False, "message": "Content cannot be empty"}
+            vault.update_agent_memory(officer, content)
+            return {"success": True, "message": f"{officer.capitalize()} Officer memory updated"}
 
         else:
             return {"success": False, "message": f"Unknown tool: {name}"}
@@ -399,6 +413,129 @@ async def remember(body: RememberRequest):
         updated = (existing.rstrip()
                    + f"\n\n## Conversation Log\n| Date | Key Insight |\n|------|------------|\n{entry}\n")
     vault.update_agent_memory(body.lane, updated)
+    return {"ok": True}
+
+
+@app.post("/api/debrief")
+async def debrief(body: ChatRequest):
+    """
+    Debrief session — Dispatch with full officer memory access.
+
+    Loads all officer memories + last standup into context so Dispatch
+    can correct the record in one conversation. Has update_officer_memory
+    tool in addition to the standard tool set.
+    """
+    global debrief_conversation
+
+    agent  = get_agent("dispatch")
+    memory = vault.agent_memory("dispatch") or ""
+    NOW    = datetime.now().strftime("%A, %B %d, %Y %H:%M")
+
+    # All officer memories — Dispatch reads before deciding what to fix
+    officer_lanes = ["jobs", "build", "learn", "home", "write", "self", "finance"]
+    officer_memories_block = "\n\n".join(
+        f"### {lane.capitalize()} Officer\n{vault.agent_memory(lane) or '(no memory yet)'}"
+        for lane in officer_lanes
+    )
+
+    last          = vault.last_standup()
+    last_standup_block = (
+        f"\n\n---\n\n# LAST STANDUP\n\n{last.content}" if last else ""
+    )
+    memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
+
+    debrief_instructions = (
+        "\n\n---\n\n# DEBRIEF MODE\n\n"
+        "Greg is giving you a postmortem. He'll tell you what actually happened — "
+        "what got done, what didn't, what officers have wrong.\n\n"
+        "Your job:\n"
+        "- Use `update_officer_memory` to correct any officer's record based on what Greg reports\n"
+        "- Use `update_note` to correct the standup note if the written record needs fixing "
+        "(path is shown in the LAST STANDUP header)\n"
+        "- Use `update_memory` if your own memory needs updating\n\n"
+        "Read each officer's current memory above before writing. "
+        "Preserve accurate entries — only change what Greg says is wrong. "
+        "Don't ask for permission. When Greg reports something, update the record."
+    )
+
+    system = (
+        f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
+        f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}"
+        f"{last_standup_block}\n\n"
+        f"---\n\n# OFFICER MEMORIES\n\n{officer_memories_block}"
+        f"{debrief_instructions}"
+    )
+
+    if not body.retry:
+        debrief_conversation.append({"role": "user", "content": body.message})
+    base_messages = list(debrief_conversation[-12:])
+
+    async def generate():
+        current_messages = list(base_messages)
+        new_turns: list[dict] = []
+
+        try:
+            while True:
+                response = await client.messages.create(
+                    model=MODEL,
+                    max_tokens=2048,
+                    system=system,
+                    messages=current_messages,
+                    tools=DEBRIEF_TOOLS,
+                )
+
+                if response.stop_reason == "tool_use":
+                    tool_results = []
+                    assistant_content = serialize_content(response.content)
+
+                    for block in response.content:
+                        if block.type == "tool_use":
+                            yield f"data: {json.dumps({'tool_working': {'name': block.name, 'input': block.input}})}\n\n"
+                            result = execute_tool(block.name, block.input, lane="dispatch")
+                            yield f"data: {json.dumps({'tool_done': {'name': block.name, **result}})}\n\n"
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": json.dumps(result),
+                            })
+
+                    current_messages = current_messages + [
+                        {"role": "assistant", "content": assistant_content},
+                        {"role": "user",      "content": tool_results},
+                    ]
+                    new_turns.extend([
+                        {"role": "assistant", "content": assistant_content},
+                        {"role": "user",      "content": tool_results},
+                    ])
+                    continue
+
+                final_text = next(
+                    (b.text for b in response.content if b.type == "text"), ""
+                )
+
+                new_turns.append({"role": "assistant", "content": final_text})
+                for turn in new_turns:
+                    debrief_conversation.append(turn)
+
+                chunk_size = 12
+                for i in range(0, len(final_text), chunk_size):
+                    yield f"data: {json.dumps({'text': final_text[i:i+chunk_size]})}\n\n"
+                    await asyncio.sleep(0.006)
+
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                break
+
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.delete("/api/debrief")
+async def clear_debrief():
+    """Clear the debrief conversation (call when closing the modal or starting fresh)."""
+    global debrief_conversation
+    debrief_conversation = []
     return {"ok": True}
 
 
