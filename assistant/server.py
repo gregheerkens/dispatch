@@ -20,13 +20,14 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
 from vault import Vault
-from agents import get_agent, AGENTS, TOOLS, DEBRIEF_TOOLS
+from agents import get_agent, AGENTS, TOOLS, ROSTER_BLOCK
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
-VAULT_PATH = os.getenv("VAULT_PATH", str(Path(__file__).parent.parent))
-MODEL      = os.getenv("DISPATCH_MODEL", "claude-opus-4-6")
-API_KEY    = os.getenv("ANTHROPIC_API_KEY")
+VAULT_PATH   = os.getenv("VAULT_PATH", str(Path(__file__).parent.parent))
+MODEL        = os.getenv("DISPATCH_MODEL", "claude-opus-4-6")   # Dispatch + standup synthesis
+LANE_MODEL   = os.getenv("LANE_MODEL",     "claude-sonnet-4-6") # Lane officers (regular chat)
+API_KEY      = os.getenv("ANTHROPIC_API_KEY")
 
 # Per-lane conversation histories (in-memory, session-scoped)
 conversations: dict[str, list] = {lane: [] for lane in AGENTS}
@@ -34,16 +35,18 @@ conversations: dict[str, list] = {lane: [] for lane in AGENTS}
 # Debrief conversation (in-memory, session-scoped, not persisted)
 debrief_conversation: list = []
 
-# Roster block — injected into every system prompt so agents know who else exists
-ROSTER_BLOCK = (
-    "\n\n---\n\n# LANE OFFICERS\n\n"
-    "The following officers exist in this system. "
-    "Use their exact names (all caps) when sending cross-lane messages:\n\n"
-    + "\n".join(
-        f"- **{key.upper()}** — {agent['description']}"
-        for key, agent in AGENTS.items()
-    )
+MEMORY_INSTRUCTION = (
+    "\n\n---\n\n# MEMORY TOOL\n\n"
+    "You have an `update_memory` tool. Use it to maintain your private memory as a living document. "
+    "When you learn something new or something changes, take your current memory, edit it in place, "
+    "consolidate anything redundant, and write the refined result back. "
+    "Prefer editing over appending — a tight, accurate memory beats a growing log. "
+    "Call it when something is genuinely worth carrying forward, not after every exchange."
 )
+
+
+def _memory_block(memory: str) -> str:
+    return f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
 
 vault:  Vault | None = None
 client: anthropic.AsyncAnthropic | None = None
@@ -115,8 +118,7 @@ def execute_tool(name: str, tool_input: dict, lane: str = "dispatch") -> dict:
         elif name == "update_officer_memory":
             officer = tool_input.get("officer", "").lower()
             content = tool_input.get("content", "").strip()
-            valid = ["jobs", "build", "learn", "home", "write", "self", "finance"]
-            if officer not in valid:
+            if officer not in {k for k in AGENTS if k != "dispatch"}:
                 return {"success": False, "message": f"Unknown officer: {officer}"}
             if not content:
                 return {"success": False, "message": "Content cannot be empty"}
@@ -146,6 +148,92 @@ def serialize_content(blocks) -> list[dict]:
     return result
 
 
+def _extract_cross_lane(report: str, valid_lanes: set) -> dict[str, list[str]]:
+    """
+    Parse `TO [LANE]: message` lines from a standup report.
+    Strips markdown decorators (bullets, bold, backticks) before matching.
+    Returns {lane_id: [message, ...]} for each lane mentioned.
+    """
+    tagged: dict[str, list[str]] = {}
+    for line in report.splitlines():
+        clean = line.strip().lstrip("-*•>`| ").replace("**", "")
+        upper = clean.upper()
+        for lid in valid_lanes:
+            prefix = f"TO {lid.upper()}:"
+            if upper.startswith(prefix):
+                msg = clean[len(prefix):].strip()
+                if msg:
+                    tagged.setdefault(lid, []).append(msg)
+    return tagged
+
+
+async def _agentic_generate(initial_messages, system, tools, execute_lane, on_complete=None, model=None):
+    """
+    Shared agentic tool-use loop used by chat and debrief endpoints.
+    Handles the tool call/response cycle then streams final text as SSE.
+    on_complete(new_turns) is called after the final turn is assembled
+    but before text is streamed — use it for persistence.
+    """
+    current_messages = list(initial_messages)
+    new_turns: list[dict] = []
+
+    try:
+        while True:
+            response = await client.messages.create(
+                model=model or MODEL,
+                max_tokens=2048,
+                system=system,
+                messages=current_messages,
+                tools=tools,
+                timeout=120.0,
+            )
+
+            if response.stop_reason == "tool_use":
+                tool_results = []
+                assistant_content = serialize_content(response.content)
+
+                for block in response.content:
+                    if block.type == "tool_use":
+                        yield f"data: {json.dumps({'tool_working': {'name': block.name, 'input': block.input}})}\n\n"
+                        result = execute_tool(block.name, block.input, lane=execute_lane)
+                        yield f"data: {json.dumps({'tool_done': {'name': block.name, **result}})}\n\n"
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result),
+                        })
+
+                current_messages = current_messages + [
+                    {"role": "assistant", "content": assistant_content},
+                    {"role": "user",      "content": tool_results},
+                ]
+                new_turns.extend([
+                    {"role": "assistant", "content": assistant_content},
+                    {"role": "user",      "content": tool_results},
+                ])
+                continue
+
+            final_text = next(
+                (b.text for b in response.content if b.type == "text"), ""
+            )
+
+            # Persist BEFORE streaming — must survive a mid-stream cancellation
+            new_turns.append({"role": "assistant", "content": final_text})
+            if on_complete:
+                on_complete(new_turns)
+
+            chunk_size = 12
+            for i in range(0, len(final_text), chunk_size):
+                yield f"data: {json.dumps({'text': final_text[i:i+chunk_size]})}\n\n"
+                await asyncio.sleep(0.006)
+
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            break
+
+    except Exception as e:
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -165,21 +253,20 @@ async def chat(lane: str, body: ChatRequest):
     if lane not in AGENTS:
         raise HTTPException(404, f"Unknown lane: {lane}")
 
-    agent   = get_agent(lane)
-    memory  = vault.agent_memory(lane) or ""
-    focus   = [lane.capitalize()] if lane not in ("dispatch", "finance") else None
-    context = vault.build_context(focus_lanes=focus)
+    vault.refresh()
+    agent  = get_agent(lane)
+    memory = vault.agent_memory(lane) or ""
+    # Lane officers get their own notes only — keeps context ~2-4k tokens instead of ~15k.
+    # Dispatch and Finance keep full vault (they reason across all lanes).
+    if lane in ("dispatch", "finance"):
+        context = vault.build_context()
+    else:
+        context = vault.build_lane_context(lane.capitalize())
 
-    memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
-    memory_instruction = (
-        "\n\n---\n\n# MEMORY TOOL\n\n"
-        "You have an `update_memory` tool. Use it to maintain your private memory as a living document. "
-        "When you learn something new or something changes, take your current memory, edit it in place, "
-        "consolidate anything redundant, and write the refined result back. "
-        "Prefer editing over appending — a tight, accurate memory beats a growing log. "
-        "Call it when something is genuinely worth carrying forward, not after every exchange."
+    system = (
+        f"{agent['system']}{_memory_block(memory)}{MEMORY_INSTRUCTION}"
+        f"{ROSTER_BLOCK}\n\n---\n\n# VAULT CONTEXT\n\n{context}"
     )
-    system = f"{agent['system']}{memory_block}{memory_instruction}{ROSTER_BLOCK}\n\n---\n\n# VAULT CONTEXT\n\n{context}"
 
     # User message into history — skip on retry (already present from failed attempt)
     if not body.retry:
@@ -189,81 +276,23 @@ async def chat(lane: str, body: ChatRequest):
                 vault.save_history(lane, conversations[lane])
             except Exception:
                 pass
-    # API context: recent 8 messages for token efficiency (vault provides the rest)
-    base_history = list(conversations[lane][-8:])
+    # API context: recent 4 messages — vault provides persistent state, history just needs flow
+    base_history = list(conversations[lane][-4:])
+    chat_model = MODEL if lane == "dispatch" else LANE_MODEL
+
+    def on_complete(new_turns):
+        for turn in new_turns:
+            conversations[lane].append(turn)
+        conversations[lane] = conversations[lane][-100:]
+        if lane != "finance":
+            try:
+                vault.save_history(lane, conversations[lane])
+            except Exception:
+                pass  # don't let a disk error kill the response
 
     async def generate():
-        current_messages = list(base_history)
-        new_turns: list[dict] = []  # assistant + tool turns to append after
-
-        try:
-            while True:
-                response = await client.messages.create(
-                    model=MODEL,
-                    max_tokens=2048,
-                    system=system,
-                    messages=current_messages,
-                    tools=TOOLS,
-                )
-
-                if response.stop_reason == "tool_use":
-                    tool_results = []
-                    assistant_content = serialize_content(response.content)
-
-                    for block in response.content:
-                        if block.type == "tool_use":
-                            # Emit working indicator to UI
-                            yield f"data: {json.dumps({'tool_working': {'name': block.name, 'input': block.input}})}\n\n"
-
-                            result = execute_tool(block.name, block.input, lane=lane)
-
-                            # Emit done indicator to UI
-                            yield f"data: {json.dumps({'tool_done': {'name': block.name, **result}})}\n\n"
-
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": json.dumps(result),
-                            })
-
-                    # Extend messages with tool turns and loop
-                    current_messages = current_messages + [
-                        {"role": "assistant", "content": assistant_content},
-                        {"role": "user", "content": tool_results},
-                    ]
-                    new_turns.extend([
-                        {"role": "assistant", "content": assistant_content},
-                        {"role": "user", "content": tool_results},
-                    ])
-                    continue
-
-                # end_turn — extract final text
-                final_text = next(
-                    (b.text for b in response.content if b.type == "text"), ""
-                )
-
-                # Persist BEFORE streaming — save_history must survive a mid-stream cancellation
-                new_turns.append({"role": "assistant", "content": final_text})
-                for turn in new_turns:
-                    conversations[lane].append(turn)
-                conversations[lane] = conversations[lane][-100:]
-                if lane != "finance":
-                    try:
-                        vault.save_history(lane, conversations[lane])
-                    except Exception:
-                        pass  # don't let a disk error kill the response
-
-                # Stream text in chunks
-                chunk_size = 12
-                for i in range(0, len(final_text), chunk_size):
-                    yield f"data: {json.dumps({'text': final_text[i:i+chunk_size]})}\n\n"
-                    await asyncio.sleep(0.006)
-
-                yield f"data: {json.dumps({'done': True})}\n\n"
-                break
-
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        async for chunk in _agentic_generate(base_history, system, TOOLS, lane, on_complete, model=chat_model):
+            yield chunk
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -282,6 +311,7 @@ async def standup():
 
     Total token cost ≈ single full-vault dispatch call.
     """
+    vault.refresh()
     LANE_IDS = ['jobs', 'build', 'learn', 'home', 'write', 'self', 'finance']
     NOW = datetime.now().strftime("%A, %B %d, %Y %H:%M")
     STANDUP_PROMPT = (
@@ -298,32 +328,29 @@ async def standup():
         agent  = get_agent(lane_id)
         memory = vault.agent_memory(lane_id) or ""
 
-        memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
-
         if lane_id == "finance":
             # Finance reads the full vault — money touches every lane
-            full_context = vault.build_context(focus_lanes=None)
-            system = (
-                f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
-                f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
-                f"---\n\n# VAULT CONTEXT\n\n{full_context}"
-            )
+            lane_context_header = "VAULT CONTEXT"
+            lane_context = vault.build_context(focus_lanes=None)
         else:
             # Lane officers see only their own notes (~2-3k tokens each)
             lane_notes = vault.by_lane(lane_id.capitalize())
+            lane_context_header = "YOUR LANE NOTES"
             lane_context = "\n\n".join(
                 f"### {n.title}\n{n.content}" for n in lane_notes
             ) or "No notes in this lane yet."
-            system = (
-                f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
-                f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
-                f"---\n\n# YOUR LANE NOTES\n\n{lane_context}"
-            )
+
+        system = (
+            f"{agent['system']}{_memory_block(memory)}{ROSTER_BLOCK}\n\n"
+            f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
+            f"---\n\n# {lane_context_header}\n\n{lane_context}"
+        )
         try:
             msg = await client.messages.create(
                 model="claude-sonnet-4-6", max_tokens=400,
                 system=system,
                 messages=[{"role": "user", "content": STANDUP_PROMPT}],
+                timeout=60.0,
             )
             return lane_id, msg.content[0].text
         except Exception as e:
@@ -338,6 +365,39 @@ async def standup():
             reports[lane_id] = report
             yield f"data: {json.dumps({'phase': 1, 'lane': lane_id, 'report': report})}\n\n"
 
+        # Log standup to each officer's conversation history.
+        # Each officer gets their own report (assistant role) so they remember what they said.
+        # Cross-lane TO [LANE]: lines arrive as user messages — a note handed to them.
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        valid_lanes = set(LANE_IDS)
+
+        # Build incoming cross-lane map: {target_lane: [(from_lane, msg), ...]}
+        incoming: dict[str, list] = {lid: [] for lid in LANE_IDS}
+        for from_lane, report in reports.items():
+            for target, messages in _extract_cross_lane(report, valid_lanes).items():
+                if target in incoming:
+                    for msg in messages:
+                        incoming[target].append((from_lane, msg))
+
+        for lid in LANE_IDS:
+            report = reports.get(lid, "")
+            if not report or report.startswith("[Unavailable"):
+                continue
+            entries = [{"role": "assistant", "content": f"[STANDUP {date_str}]\n{report}"}]
+            if incoming[lid]:
+                notes = "\n".join(
+                    f"FROM {src.upper()}: {msg}" for src, msg in incoming[lid]
+                )
+                entries.append({"role": "user", "content": f"[STANDUP INCOMING — {date_str}]\n{notes}"})
+            for entry in entries:
+                conversations[lid].append(entry)
+            conversations[lid] = conversations[lid][-100:]
+            if lid != "finance":
+                try:
+                    vault.save_history(lid, conversations[lid])
+                except Exception:
+                    pass
+
         # Phase 2 — dispatch synthesis (streaming)
         agent  = get_agent("dispatch")
         memory = vault.agent_memory("dispatch") or ""
@@ -346,13 +406,12 @@ async def standup():
             f"**{lid.upper()} AGENT REPORT:**\n{rpt}"
             for lid, rpt in reports.items()
         )
-        memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
         last = vault.last_standup()
         last_standup_block = (
             f"\n\n---\n\n# PREVIOUS STANDUP\n\n{last.content}" if last else ""
         )
         system = (
-            f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
+            f"{agent['system']}{_memory_block(memory)}{ROSTER_BLOCK}\n\n"
             f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
             f"{last_standup_block}"
             f"---\n\n# LANE AGENT REPORTS\n\n{reports_block}"
@@ -419,111 +478,122 @@ async def remember(body: RememberRequest):
 @app.post("/api/debrief")
 async def debrief(body: ChatRequest):
     """
-    Debrief session — Dispatch with full officer memory access.
+    Debrief — three-phase, no tool loops.
 
-    Loads all officer memories + last standup into context so Dispatch
-    can correct the record in one conversation. Has update_officer_memory
-    tool in addition to the standard tool set.
+    Phase 1: Sonnet routing call (small, fast) identifies which officers need
+             memory updates and what changed. Returns JSON.
+    Phase 2: Parallel Sonnet calls update each officer's memory directly —
+             one focused call per officer, no multi-step tool loops.
+    Phase 3: Sonnet streams Dispatch's acknowledgment to Greg.
     """
     global debrief_conversation
 
-    agent  = get_agent("dispatch")
-    memory = vault.agent_memory("dispatch") or ""
-    NOW    = datetime.now().strftime("%A, %B %d, %Y %H:%M")
-
-    # All officer memories — Dispatch reads before deciding what to fix
-    officer_lanes = ["jobs", "build", "learn", "home", "write", "self", "finance"]
-    officer_memories_block = "\n\n".join(
-        f"### {lane.capitalize()} Officer\n{vault.agent_memory(lane) or '(no memory yet)'}"
-        for lane in officer_lanes
-    )
-
-    last          = vault.last_standup()
-    last_standup_block = (
-        f"\n\n---\n\n# LAST STANDUP\n\n{last.content}" if last else ""
-    )
-    memory_block = f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
-
-    debrief_instructions = (
-        "\n\n---\n\n# DEBRIEF MODE\n\n"
-        "Greg is giving you a postmortem. He'll tell you what actually happened — "
-        "what got done, what didn't, what officers have wrong.\n\n"
-        "Your job:\n"
-        "- Use `update_officer_memory` to correct any officer's record based on what Greg reports\n"
-        "- Use `update_note` to correct the standup note if the written record needs fixing "
-        "(path is shown in the LAST STANDUP header)\n"
-        "- Use `update_memory` if your own memory needs updating\n\n"
-        "Read each officer's current memory above before writing. "
-        "Preserve accurate entries — only change what Greg says is wrong. "
-        "Don't ask for permission. When Greg reports something, update the record."
-    )
-
-    system = (
-        f"{agent['system']}{memory_block}{ROSTER_BLOCK}\n\n"
-        f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}"
-        f"{last_standup_block}\n\n"
-        f"---\n\n# OFFICER MEMORIES\n\n{officer_memories_block}"
-        f"{debrief_instructions}"
-    )
+    vault.refresh()
+    NOW = datetime.now().strftime("%A, %B %d, %Y %H:%M")
 
     if not body.retry:
         debrief_conversation.append({"role": "user", "content": body.message})
-    base_messages = list(debrief_conversation[-12:])
+
+    valid_officers = list(AGENTS.keys())
 
     async def generate():
-        current_messages = list(base_messages)
-        new_turns: list[dict] = []
-
         try:
-            while True:
-                response = await client.messages.create(
-                    model=MODEL,
-                    max_tokens=2048,
-                    system=system,
-                    messages=current_messages,
-                    tools=DEBRIEF_TOOLS,
-                )
+            # ── Phase 1: Route ─────────────────────────────────────────────
+            # Small Sonnet call — Greg's message only. Decides who needs updating.
+            routing = await client.messages.create(
+                model=LANE_MODEL,
+                max_tokens=400,
+                timeout=30.0,
+                system=(
+                    "You are a debrief router. Greg is giving a postmortem on what actually happened.\n"
+                    "Identify which officer memories need updating and briefly describe what changed.\n\n"
+                    f"Valid officers: {', '.join(valid_officers)}\n\n"
+                    "Return JSON only — no prose, no code fences.\n"
+                    'Format: {"officer": "one sentence: what to correct or add"}\n'
+                    "Return {} if nothing needs updating."
+                ),
+                messages=[{"role": "user", "content": body.message}],
+            )
 
-                if response.stop_reason == "tool_use":
-                    tool_results = []
-                    assistant_content = serialize_content(response.content)
+            routing_text = routing.content[0].text.strip().strip("`").lstrip("json").strip()
+            try:
+                updates_needed: dict[str, str] = {
+                    k: v for k, v in json.loads(routing_text).items()
+                    if k in valid_officers
+                }
+            except Exception:
+                updates_needed = {}
 
-                    for block in response.content:
-                        if block.type == "tool_use":
-                            yield f"data: {json.dumps({'tool_working': {'name': block.name, 'input': block.input}})}\n\n"
-                            result = execute_tool(block.name, block.input, lane="dispatch")
-                            yield f"data: {json.dumps({'tool_done': {'name': block.name, **result}})}\n\n"
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": block.id,
-                                "content": json.dumps(result),
-                            })
+            # ── Phase 2: Update ────────────────────────────────────────────
+            # One focused Sonnet call per officer. Reads only that officer's
+            # current memory + the change description. Writes directly — no tools.
+            async def update_officer(officer: str, change: str) -> tuple[str, bool]:
+                current = vault.agent_memory(officer) or "(no memory yet)"
+                try:
+                    resp = await client.messages.create(
+                        model=LANE_MODEL,
+                        max_tokens=600,
+                        timeout=45.0,
+                        system=(
+                            "Rewrite this officer's private memory based on what Greg reported. "
+                            "Preserve accurate entries. Correct or add what changed. "
+                            "Keep it tight — a sharp 150-word memory beats a bloated log. "
+                            "Return only the updated memory content, no preamble."
+                        ),
+                        messages=[{"role": "user", "content": (
+                            f"CURRENT MEMORY:\n{current}\n\n"
+                            f"GREG'S FULL MESSAGE:\n{body.message}\n\n"
+                            f"FOCUS FOR THIS OFFICER ({officer.upper()}):\n{change}\n\n"
+                            "Write the complete updated memory."
+                        )}],
+                    )
+                    vault.update_agent_memory(officer, resp.content[0].text.strip())
+                    return officer, True
+                except Exception:
+                    return officer, False
 
-                    current_messages = current_messages + [
-                        {"role": "assistant", "content": assistant_content},
-                        {"role": "user",      "content": tool_results},
-                    ]
-                    new_turns.extend([
-                        {"role": "assistant", "content": assistant_content},
-                        {"role": "user",      "content": tool_results},
-                    ])
-                    continue
+            update_results: dict[str, bool] = {}
+            if updates_needed:
+                tasks = [update_officer(off, chg) for off, chg in updates_needed.items()]
+                for future in asyncio.as_completed(tasks):
+                    officer, success = await future
+                    update_results[officer] = success
+                    label = "updated" if success else "failed"
+                    yield f"data: {json.dumps({'tool_done': {'name': 'update_officer_memory', 'officer': officer, 'success': success, 'message': f'{officer.capitalize()} Officer memory {label}'}})}\n\n"
 
-                final_text = next(
-                    (b.text for b in response.content if b.type == "text"), ""
-                )
+            # ── Phase 3: Respond ───────────────────────────────────────────
+            # Sonnet streams Dispatch's acknowledgment. Small context: only the
+            # recent conversation + a summary of what was just updated.
+            if update_results:
+                updated = [k for k, v in update_results.items() if v]
+                failed  = [k for k, v in update_results.items() if not v]
+                actions = f"Updated: {', '.join(updated)}." + (f" Failed: {', '.join(failed)}." if failed else "")
+            else:
+                actions = "No officer memories needed updating based on Greg's message."
 
-                new_turns.append({"role": "assistant", "content": final_text})
-                for turn in new_turns:
-                    debrief_conversation.append(turn)
+            dispatch_system = (
+                "You are Dispatch, Greg's personal command-and-control assistant. "
+                "Direct, warm, no corporate speak. Treat him as a capable adult.\n\n"
+                "You have just completed a debrief. All memory updates have already been written. "
+                "Do not attempt to create notes or call tools — the record is already corrected.\n\n"
+                f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
+                f"---\n\n# DEBRIEF ACTIONS TAKEN\n\n{actions}"
+            )
 
-                chunk_size = 12
-                for i in range(0, len(final_text), chunk_size):
-                    yield f"data: {json.dumps({'text': final_text[i:i+chunk_size]})}\n\n"
-                    await asyncio.sleep(0.006)
+            final_text = ""
+            async with client.messages.stream(
+                model=LANE_MODEL,
+                max_tokens=1024,
+                timeout=60.0,
+                system=dispatch_system,
+                messages=list(debrief_conversation[-8:]),
+            ) as stream:
+                async for text in stream.text_stream:
+                    final_text += text
+                    yield f"data: {json.dumps({'text': text})}\n\n"
 
-                yield f"data: {json.dumps({'done': True})}\n\n"
-                break
+            debrief_conversation.append({"role": "assistant", "content": final_text})
+            yield f"data: {json.dumps({'done': True})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)})}\n\n"

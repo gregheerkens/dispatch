@@ -28,7 +28,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.rule import Rule
-from rich import print as rprint
 
 # Load from vault root .env
 vault_root = Path(__file__).parent.parent
@@ -159,8 +158,7 @@ def run_chat(client: anthropic.Anthropic, vault: Vault, lane: str = "dispatch"):
             note = user_input[10:].strip()
             if note:
                 existing = vault.agent_memory(current_lane) or ""
-                from datetime import datetime as dt
-                entry = f"\n| {dt.now().strftime('%Y-%m-%d')} | {note} |"
+                entry = f"\n| {datetime.now().strftime('%Y-%m-%d')} | {note} |"
                 # Append to conversation log if it exists, otherwise just append
                 if "## Conversation Log" in existing:
                     updated = existing.rstrip() + entry + "\n"

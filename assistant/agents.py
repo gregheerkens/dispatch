@@ -54,61 +54,11 @@ Be honest about the market. Don't sugarcoat rejection patterns. Help him work sm
 
 ## Creating Notes
 
-You have tools to create and update vault notes. When Greg mentions a job application or contact,
-create the note immediately with what you have — don't ask first. Fill unknown fields with "unknown".
-Confirm what you filed, then mention in one line if anything important was left blank.
+Create notes immediately — don't ask first. Fill unknown fields with "unknown". Confirm what you filed in one line.
 
-Today's date is in the vault context timestamp. Use it for date_applied and follow_up.
+**Application** (`type: application`): fields — lane, company, role, date_applied, follow_up (date+7), status: active, source, salary_range, location, role_type. Body: Notes + Follow-up checkbox.
 
-Job application template:
-```
----
-type: application
-lane: jobs
-company: [company name]
-role: [job title]
-date_applied: [YYYY-MM-DD]
-follow_up: [date_applied + 7 days, YYYY-MM-DD]
-status: active
-source: [LinkedIn/Indeed/Company website/Referral/Other — use "unknown" if not mentioned]
-salary_range: [e.g. "$180k" — use "unknown" if not mentioned]
-location: [Remote/Hybrid/On-site — use "unknown" if not mentioned]
-role_type: [dev/sr-dev/pm/tpmm/devrel — infer from role title]
-tags:
-  - jobs
-  - application
-  - active
----
-
-# [Company] — [Role]
-
-## Notes
-[What Greg said about it]
-
-## Follow-up
-- [ ] Follow up if no response by [follow_up date]
-```
-
-Contact template:
-```
----
-type: contact
-lane: jobs
-company: [company]
-title: [their title or "unknown"]
-warmth: cold
-last_contact: [today, YYYY-MM-DD]
-next_followup: [today + 14 days, YYYY-MM-DD]
-tags:
-  - jobs
-  - contact
----
-
-# [Name] — [Company]
-
-## Notes
-[How they connected, context]
-```""",
+**Contact** (`type: contact`): fields — lane, company, title, warmth: cold, last_contact, next_followup (date+14). Body: Notes section.""",
     },
 
     "build": {
@@ -132,52 +82,11 @@ Don't let him build more scaffolding when he needs to be shipping.
 
 ## Creating Notes
 
-You have tools to create and update vault notes. When Greg mentions a project or idea, create a note immediately.
+Create notes immediately — log first, refine together after.
 
-Project template:
-```
----
-type: project
-lane: build
-title: [name]
-stack: [tech stack — infer from context or ask]
-started: [today]
-status: active
-tags:
-  - build
-  - project
-  - active
----
+**Project** (`type: project`): fields — lane, title, stack, started, status: active. Body: What It Is (one sentence) + Next Action checkbox + Notes.
 
-# [Project Name]
-
-## What It Is
-[One sentence description]
-
-## Next Action
-- [ ] [The smallest concrete next step]
-
-## Notes
-[Anything Greg mentioned]
-```
-
-Idea (quick inbox capture):
-```
----
-type: idea
-lane: build
-tags:
-  - build
-  - idea
-  - inbox
----
-
-# [Idea Title]
-
-[What Greg said about it]
-```
-
-Log it first, refine it together after.""",
+**Idea** (`type: idea`): fields — lane, tags: build/idea/inbox. Body: what Greg said, verbatim.""",
     },
 
     "learn": {
@@ -200,28 +109,9 @@ Your job is to:
 
 ## Creating Notes
 
-You have tools to create and update vault notes. When Greg mentions a course, skill, or resource he's working on or wants to track, log it immediately.
+Log immediately when Greg mentions a course, skill, or resource.
 
-```
----
-type: [course/skill/resource/book]
-lane: learn
-title: [name]
-platform: [Coursera/YouTube/Book/Podcast/Other]
-started: [today]
-status: active
-tags:
-  - learn
----
-
-# [Title]
-
-## Notes
-[Context, why he's learning it, connection to job search]
-
-## Key Takeaways
--
-```""",
+**Course/skill/resource** (`type: course|skill|resource|book`): fields — lane, title, platform, started, status: active. Body: Notes (context + job search connection) + Key Takeaways list.""",
     },
 
     "home": {
@@ -243,32 +133,9 @@ Your job is to:
 
 ## Creating Notes
 
-You have tools to create and update vault notes. When Greg mentions a maintenance item, repair, or home task, create the note immediately.
+Create maintenance notes immediately when Greg mentions a repair or home task.
 
-```
----
-type: maintenance
-lane: home
-category: [HVAC/Plumbing/Electrical/Appliance/Structure/Roof/Yard/Vehicle/Animal/Other]
-location: [where on property]
-priority: [urgent/soon/scheduled/someday]
-warranty_expires: [YYYY-MM-DD if known]
-last_service: [YYYY-MM-DD if known]
-tags:
-  - home
-  - maintenance
----
-
-# [Item — What Needs Doing]
-
-## Notes
-[What Greg said, symptoms, history]
-
-## Next Step
-- [ ] [What to do]
-```
-
-Add the `urgent` tag if it's genuinely time-sensitive (water, heat, structural, animal welfare).""",
+**Maintenance** (`type: maintenance`): fields — lane, category (HVAC/Plumbing/Electrical/Appliance/Structure/Roof/Yard/Vehicle/Animal/Other), location, priority (urgent/soon/scheduled/someday), warranty_expires, last_service. Body: Notes + Next Step checkbox. Add `urgent` tag for water, heat, structural, or animal welfare issues.""",
     },
 
     "write": {
@@ -289,30 +156,9 @@ Your job is to:
 
 ## Creating Notes
 
-You have tools to create and update vault notes. When Greg shares a writing idea or wants to start something, capture it before it evaporates.
+Capture writing ideas immediately before they evaporate.
 
-```
----
-type: [idea/draft/outline]
-lane: write
-title: [working title]
-started: [today]
-status: [idea/in-progress]
-tags:
-  - write
-  - [type]
----
-
-# [Working Title]
-
-## The Idea
-[What Greg said — preserve his exact phrasing where possible, it's often better than a summary]
-
-## Possible Angles
--
-
-## Notes
-```""",
+**Writing note** (`type: idea|draft|outline`): fields — lane, title, started, status (idea/in-progress). Body: The Idea (preserve Greg's exact phrasing) + Possible Angles list + Notes.""",
     },
 
     "self": {
@@ -338,24 +184,9 @@ You are not a therapist. If something is beyond what a system like this should h
 
 ## Creating Notes
 
-You have tools to create and update vault notes. When Greg wants to log something — a win, a reflection, a hard day, a habit note — create it immediately.
+Log immediately when Greg wants to capture a win, reflection, hard day, or habit note.
 
-```
----
-type: [reflection/win/habit/note]
-lane: self
-date: [today]
-tags:
-  - self
-  - [type]
----
-
-# [Date] — [Brief Label]
-
-[What Greg said, in his words as much as possible]
-```
-
-Don't editorialize in the note itself. Capture accurately, reflect separately.""",
+**Self note** (`type: reflection|win|habit|note`): fields — lane, date, tags. Body: what Greg said in his words. Don't editorialize in the note — capture accurately, reflect separately.""",
     },
 
     "finance": {
@@ -381,22 +212,9 @@ Keep your memory like a ledger, not a journal. Current balances and rates, not h
 
 ## Creating Notes
 
-File financial documents (offer comparisons, budget breakdowns, net worth snapshots) in the Finance lane.
+File financial documents in the Finance lane.
 
-```
----
-type: [budget/offer-analysis/snapshot/note]
-lane: Finance
-date: [today]
-tags:
-  - finance
-  - [type]
----
-
-# [Title]
-
-[Content]
-```
+**Finance note** (`type: budget|offer-analysis|snapshot|note`): fields — lane: Finance, date, tags. Body: document content.
 
 ## Tone
 
@@ -521,6 +339,17 @@ DEBRIEF_TOOLS = TOOLS + [
         },
     }
 ]
+
+
+ROSTER_BLOCK = (
+    "\n\n---\n\n# LANE OFFICERS\n\n"
+    "The following officers exist in this system. "
+    "Use their exact names (all caps) when sending cross-lane messages:\n\n"
+    + "\n".join(
+        f"- **{key.upper()}** — {agent['description']}"
+        for key, agent in AGENTS.items()
+    )
+)
 
 
 def get_agent(name: str) -> dict:

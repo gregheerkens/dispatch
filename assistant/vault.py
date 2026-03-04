@@ -234,13 +234,50 @@ tags:
                 results.append(note)
         return results
 
+    def build_lane_context(self, lane: str, max_chars: int = 20000) -> str:
+        """
+        Lightweight context for a single lane officer's chat session.
+        Loads only: Self README anchor + today's daily note + that lane's own notes.
+        No summaries of other lanes — same footprint as standup Phase 1 (~2-4k tokens).
+        """
+        sections = []
+        chars_used = 0
+
+        # Self README — identity anchor
+        for note in self.by_lane("Self"):
+            if "README" in note.path.name:
+                block = f"## [Self] {note.title}\n{note.content}\n"
+                sections.append(block)
+                chars_used += len(block)
+
+        # Today's daily note — situational awareness
+        today = self.today_note()
+        if today:
+            block = f"## [Daily — Today] {today.title}\n{today.content}\n"
+            sections.append(block)
+            chars_used += len(block)
+
+        # Lane's own notes — full content
+        for note in self.by_lane(lane):
+            block = f"## [{lane}] {note.title}\n{note.content}\n"
+            if chars_used + len(block) < max_chars:
+                sections.append(block)
+                chars_used += len(block)
+
+        header = (
+            f"# {lane} Lane Context\n"
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            f"Notes: {len(sections)} | Characters: {chars_used}\n\n"
+        )
+        return header + "\n---\n\n".join(sections)
+
     def build_context(self, focus_lanes: Optional[list[str]] = None, max_chars: int = 60000) -> str:
         """
         Build a context string for the Claude API.
         Pulls full content for focused lanes, summaries for others.
         Respects a character budget to stay within token limits.
+        Call vault.refresh() before this if you need to pick up on-disk changes.
         """
-        self.refresh()
         sections = []
         chars_used = 0
 
