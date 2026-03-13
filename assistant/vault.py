@@ -257,6 +257,15 @@ tags:
             sections.append(block)
             chars_used += len(block)
 
+        # Recent daily notes — last 3 days of summaries for temporal context
+        for note in self.recent_daily_notes(days=3):
+            if today and note.path == today.path:
+                continue
+            block = f"## [Daily — Recent] {note.title}\n{note.summary()}\n"
+            if chars_used + len(block) < max_chars:
+                sections.append(block)
+                chars_used += len(block)
+
         # Lane's own notes — full content
         for note in self.by_lane(lane):
             block = f"## [{lane}] {note.title}\n{note.content}\n"

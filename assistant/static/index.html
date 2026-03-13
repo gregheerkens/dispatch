@@ -469,6 +469,25 @@
   .history-divider::before { left: 0; }
   .history-divider::after  { right: 0; }
 
+  /* History message delete button */
+  .message[data-historical] { position: relative; }
+  .msg-delete {
+    display: none;
+    position: absolute;
+    top: 4px; right: 4px;
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--dimmer);
+    font-size: 9px;
+    padding: 1px 5px;
+    cursor: pointer;
+    line-height: 1.4;
+    letter-spacing: 0.06em;
+  }
+  .message[data-historical]:hover .msg-delete { display: block; }
+  .msg-delete:hover { color: #f43f5e; border-color: #f43f5e; }
+
   /* Standup */
   .standup-label {
     display: inline-block;
@@ -963,7 +982,19 @@ async function runStandup() {
         if (data.saved) {
           const footer = document.getElementById('standupFooter');
           if (footer) {
-            footer.innerHTML = `<span class="saved-badge">✓ Saved — <code>${data.saved}</code></span>`;
+            footer.innerHTML = `<span class="saved-badge">✓ Saved — <code>${data.saved}</code></span><span class="memory-status" style="margin-left:10px;color:var(--dim);font-size:9px;letter-spacing:.08em">Updating officer memories…</span>`;
+          }
+        }
+
+        if (data.phase === 3 && data.lane) {
+          const footer = document.getElementById('standupFooter');
+          const statusEl = footer?.querySelector('.memory-status');
+          if (statusEl) {
+            const icon = data.success ? '✓' : '✗';
+            const existing = statusEl.dataset.done || '';
+            statusEl.dataset.done = existing + data.lane + ',';
+            const count = (statusEl.dataset.done.match(/,/g) || []).length;
+            statusEl.textContent = `${icon} Memories updated (${count}/7)`;
           }
         }
 
@@ -971,6 +1002,9 @@ async function runStandup() {
           // Final clean render — no cursor
           content.innerHTML = renderMarkdown(synthesisBuffer);
           content.scrollTop = 0;
+          const footer = document.getElementById('standupFooter');
+          const statusEl = footer?.querySelector('.memory-status');
+          if (statusEl) statusEl.textContent = '✓ Officer memories updated';
         }
       }
     }
@@ -1001,7 +1035,7 @@ document.addEventListener('keydown', e => {
 });
 
 // ── History restore ───────────────────────────────────────────────────────────
-function addHistoricalMessage(laneId, role, text) {
+function addHistoricalMessage(laneId, role, text, idx) {
   const msgs = document.getElementById(`messages-${laneId}`);
   const hint = msgs.querySelector('.empty-hint');
   if (hint) hint.remove();
@@ -1015,6 +1049,20 @@ function addHistoricalMessage(laneId, role, text) {
     div.innerHTML = `<div class="bubble"><div class="tool-actions"></div><div class="agent-text">${renderMarkdown(text)}</div></div>`;
   }
   div.dataset.historical = '1';
+  if (idx !== undefined) {
+    const btn = document.createElement('button');
+    btn.className = 'msg-delete';
+    btn.textContent = '✕ REMOVE';
+    btn.onclick = async () => {
+      await fetch(`/api/history/${laneId}/${idx}`, { method: 'DELETE' });
+      // Reload history display to re-sync indices after deletion
+      const msgsEl = document.getElementById(`messages-${laneId}`);
+      [...msgsEl.querySelectorAll('[data-historical]')].forEach(el => el.remove());
+      msgsEl.querySelectorAll('.history-divider').forEach(el => el.remove());
+      loadHistory(laneId);
+    };
+    div.appendChild(btn);
+  }
   msgs.appendChild(div);
 }
 
@@ -1027,7 +1075,6 @@ async function loadHistory(laneId) {
 
     const msgs = document.getElementById(`messages-${laneId}`);
 
-    // Add a subtle divider before historical messages
     const divider = document.createElement('div');
     divider.className = 'history-divider';
     divider.textContent = `${messages.length} previous messages`;
@@ -1035,10 +1082,9 @@ async function loadHistory(laneId) {
     msgs.appendChild(divider);
 
     for (const msg of messages) {
-      addHistoricalMessage(laneId, msg.role, msg.text);
+      addHistoricalMessage(laneId, msg.role, msg.text, msg.idx);
     }
 
-    // Scroll to bottom so newest messages are visible
     msgs.scrollTop = msgs.scrollHeight;
   } catch {}
 }

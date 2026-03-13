@@ -20,13 +20,14 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
 from vault import Vault
-from agents import get_agent, AGENTS, TOOLS, ROSTER_BLOCK
+from agents import get_agent, AGENTS, TOOLS, DEBRIEF_TOOLS, ROSTER_BLOCK
 
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 VAULT_PATH   = os.getenv("VAULT_PATH", str(Path(__file__).parent.parent))
 MODEL        = os.getenv("DISPATCH_MODEL", "claude-opus-4-6")   # Dispatch + standup synthesis
 LANE_MODEL   = os.getenv("LANE_MODEL",     "claude-sonnet-4-6") # Lane officers (regular chat)
+HAIKU_MODEL  = os.getenv("HAIKU_MODEL",    "claude-haiku-4-5-20251001")  # Cheap consolidation tasks
 API_KEY      = os.getenv("ANTHROPIC_API_KEY")
 
 # Per-lane conversation histories (in-memory, session-scoped)
@@ -35,18 +36,33 @@ conversations: dict[str, list] = {lane: [] for lane in AGENTS}
 # Debrief conversation (in-memory, session-scoped, not persisted)
 debrief_conversation: list = []
 
+MEMORY_TEMPLATE = (
+    "## Current State\n"
+    "(Where things stand in this lane right now.)\n\n"
+    "## Active Threads\n"
+    "(Ongoing items with actions pending. Remove when resolved.)\n\n"
+    "## Key Facts\n"
+    "(Important facts Greg has shared: numbers, names, dates, decisions.)\n\n"
+    "## Cross-Lane\n"
+    "(Messages received from other officers relevant to this lane.)"
+)
+
 MEMORY_INSTRUCTION = (
     "\n\n---\n\n# MEMORY TOOL\n\n"
-    "You have an `update_memory` tool. Use it to maintain your private memory as a living document. "
-    "When you learn something new or something changes, take your current memory, edit it in place, "
-    "consolidate anything redundant, and write the refined result back. "
-    "Prefer editing over appending — a tight, accurate memory beats a growing log. "
-    "Call it when something is genuinely worth carrying forward, not after every exchange."
+    "You have an `update_memory` tool. Your memory is your working record of Greg's situation in your lane — "
+    "it is what you will know next session, at standup, and when Dispatch needs to brief from your lane. "
+    "Default to writing. If Greg tells you something about his situation, update memory. "
+    "If something changes, correct it. If a thread is resolved, note that. "
+    "Maintain the four sections: Current State / Active Threads / Key Facts / Cross-Lane. "
+    "Edit sections in place. A memory that's slightly too detailed is far more useful than one with gaps. "
+    "Critically: when a pipeline item closes, a task completes, or a status changes — update memory immediately. "
+    "Do not wait for the next exchange. Stale status in memory is actively harmful."
 )
 
 
 def _memory_block(memory: str) -> str:
-    return f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{memory}" if memory else ""
+    content = memory.strip() if memory and memory.strip() else MEMORY_TEMPLATE
+    return f"\n\n---\n\n# YOUR PRIVATE MEMORY\n\n{content}"
 
 vault:  Vault | None = None
 client: anthropic.AsyncAnthropic | None = None
@@ -276,8 +292,7 @@ async def chat(lane: str, body: ChatRequest):
                 vault.save_history(lane, conversations[lane])
             except Exception:
                 pass
-    # API context: recent 4 messages — vault provides persistent state, history just needs flow
-    base_history = list(conversations[lane][-4:])
+    base_history = list(conversations[lane][-20:])
     chat_model = MODEL if lane == "dispatch" else LANE_MODEL
 
     def on_complete(new_turns):
@@ -340,9 +355,23 @@ async def standup():
                 f"### {n.title}\n{n.content}" for n in lane_notes
             ) or "No notes in this lane yet."
 
+        # Previous standup report for this officer — so they can report delta, not just state
+        prev_report = next(
+            (m["content"] for m in reversed(conversations[lane_id])
+             if m["role"] == "assistant"
+             and isinstance(m["content"], str)
+             and m["content"].startswith("[STANDUP")),
+            None,
+        )
+        prev_block = (
+            f"\n\n---\n\n# YOUR PREVIOUS STANDUP REPORT\n\n{prev_report}"
+            if prev_report else ""
+        )
+
         system = (
             f"{agent['system']}{_memory_block(memory)}{ROSTER_BLOCK}\n\n"
-            f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
+            f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}"
+            f"{prev_block}\n\n"
             f"---\n\n# {lane_context_header}\n\n{lane_context}"
         )
         try:
@@ -455,6 +484,47 @@ async def standup():
         except Exception as e:
             yield f"data: {json.dumps({'save_error': str(e)})}\n\n"
 
+        # ── Phase 3: Memory consolidation ─────────────────────────────────
+        # Parallel Haiku calls update each officer's memory from their standup
+        # report and any cross-lane messages they received. Cheap, fast, reliable.
+        async def consolidate_officer_memory(lane_id: str) -> tuple[str, bool]:
+            report  = reports.get(lane_id, "")
+            cross   = incoming.get(lane_id, [])
+            current = vault.agent_memory(lane_id) or ""
+            cross_text = (
+                "\n\nCross-lane messages received:\n"
+                + "\n".join(f"FROM {src.upper()}: {msg}" for src, msg in cross)
+                if cross else ""
+            )
+            try:
+                resp = await client.messages.create(
+                    model=HAIKU_MODEL,
+                    max_tokens=1500,
+                    timeout=45.0,
+                    system=(
+                        "Update this lane officer's private memory after standup. "
+                        "Memory has four sections: Current State, Active Threads, Key Facts, Cross-Lane. "
+                        "Update each section based on the standup report and any cross-lane messages. "
+                        "Preserve accurate existing entries. Remove resolved threads. "
+                        "Keep total under 300 words. Return only the updated memory, no preamble."
+                    ),
+                    messages=[{"role": "user", "content": (
+                        f"CURRENT MEMORY:\n{current or '(empty — use the four-section template)'}\n\n"
+                        f"STANDUP REPORT:\n{report}"
+                        f"{cross_text}\n\n"
+                        "Write the complete updated memory."
+                    )}],
+                )
+                vault.update_agent_memory(lane_id, resp.content[0].text.strip())
+                return lane_id, True
+            except Exception:
+                return lane_id, False
+
+        consolidation_tasks = [consolidate_officer_memory(lid) for lid in LANE_IDS]
+        for future in asyncio.as_completed(consolidation_tasks):
+            lid, success = await future
+            yield f"data: {json.dumps({'phase': 3, 'lane': lid, 'success': success})}\n\n"
+
         yield f"data: {json.dumps({'done': True})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
@@ -478,13 +548,11 @@ async def remember(body: RememberRequest):
 @app.post("/api/debrief")
 async def debrief(body: ChatRequest):
     """
-    Debrief — three-phase, no tool loops.
+    Debrief — Dispatch as a fully-armed record editor.
 
-    Phase 1: Sonnet routing call (small, fast) identifies which officers need
-             memory updates and what changed. Returns JSON.
-    Phase 2: Parallel Sonnet calls update each officer's memory directly —
-             one focused call per officer, no multi-step tool loops.
-    Phase 3: Sonnet streams Dispatch's acknowledgment to Greg.
+    Dispatch sees all officer memories + the most recent standup note, then
+    uses the standard agentic tool loop to make targeted corrections based on
+    what Greg reports actually happened. Uses Opus — this is a master override.
     """
     global debrief_conversation
 
@@ -494,109 +562,62 @@ async def debrief(body: ChatRequest):
     if not body.retry:
         debrief_conversation.append({"role": "user", "content": body.message})
 
-    valid_officers = list(AGENTS.keys())
+    # All officer memories — Dispatch needs to see what it's correcting
+    officer_parts = []
+    for officer in [k for k in AGENTS if k != "dispatch"]:
+        mem = vault.agent_memory(officer)
+        if mem:
+            officer_parts.append(f"### {officer.upper()} OFFICER\n{mem.strip()}")
+
+    officer_block = (
+        "\n\n---\n\n# OFFICER MEMORIES\n\n" + "\n\n".join(officer_parts)
+        if officer_parts else ""
+    )
+
+    # Most recent standup note (including today's if it exists)
+    standups = sorted(
+        [n for n in vault.notes if n.lane == "Daily" and "standup" in n.path.name],
+        key=lambda n: n.path.name,
+        reverse=True,
+    )
+    standup_block = ""
+    if standups:
+        latest = standups[0]
+        standup_block = (
+            f"\n\n---\n\n# MOST RECENT STANDUP ({latest.path.name})\n\n{latest.content}"
+        )
+
+    dispatch_memory = vault.agent_memory("dispatch") or ""
+
+    system = (
+        f"{AGENTS['dispatch']['system']}"
+        f"{_memory_block(dispatch_memory)}"
+        f"{MEMORY_INSTRUCTION}"
+        f"{ROSTER_BLOCK}"
+        f"\n\n---\n\n# CURRENT DATE AND TIME\n\n{NOW}"
+        "\n\n---\n\n# DEBRIEF MODE\n\n"
+        "Greg is correcting the record — what actually happened vs. what was captured. "
+        "Read his message, compare it against the officer memories and standup note below, "
+        "then make targeted corrections using `update_officer_memory` or `update_note`. "
+        "Only change what his correction actually affects. Preserve everything else intact."
+        f"{officer_block}"
+        f"{standup_block}"
+    )
+
+    def on_complete(new_turns):
+        for turn in new_turns:
+            debrief_conversation.append(turn)
 
     async def generate():
-        try:
-            # ── Phase 1: Route ─────────────────────────────────────────────
-            # Small Sonnet call — Greg's message only. Decides who needs updating.
-            routing = await client.messages.create(
-                model=LANE_MODEL,
-                max_tokens=400,
-                timeout=30.0,
-                system=(
-                    "You are a debrief router. Greg is giving a postmortem on what actually happened.\n"
-                    "Identify which officer memories need updating and briefly describe what changed.\n\n"
-                    f"Valid officers: {', '.join(valid_officers)}\n\n"
-                    "Return JSON only — no prose, no code fences.\n"
-                    'Format: {"officer": "one sentence: what to correct or add"}\n'
-                    "Return {} if nothing needs updating."
-                ),
-                messages=[{"role": "user", "content": body.message}],
-            )
-
-            routing_text = routing.content[0].text.strip().strip("`").lstrip("json").strip()
-            try:
-                updates_needed: dict[str, str] = {
-                    k: v for k, v in json.loads(routing_text).items()
-                    if k in valid_officers
-                }
-            except Exception:
-                updates_needed = {}
-
-            # ── Phase 2: Update ────────────────────────────────────────────
-            # One focused Sonnet call per officer. Reads only that officer's
-            # current memory + the change description. Writes directly — no tools.
-            async def update_officer(officer: str, change: str) -> tuple[str, bool]:
-                current = vault.agent_memory(officer) or "(no memory yet)"
-                try:
-                    resp = await client.messages.create(
-                        model=LANE_MODEL,
-                        max_tokens=600,
-                        timeout=45.0,
-                        system=(
-                            "Rewrite this officer's private memory based on what Greg reported. "
-                            "Preserve accurate entries. Correct or add what changed. "
-                            "Keep it tight — a sharp 150-word memory beats a bloated log. "
-                            "Return only the updated memory content, no preamble."
-                        ),
-                        messages=[{"role": "user", "content": (
-                            f"CURRENT MEMORY:\n{current}\n\n"
-                            f"GREG'S FULL MESSAGE:\n{body.message}\n\n"
-                            f"FOCUS FOR THIS OFFICER ({officer.upper()}):\n{change}\n\n"
-                            "Write the complete updated memory."
-                        )}],
-                    )
-                    vault.update_agent_memory(officer, resp.content[0].text.strip())
-                    return officer, True
-                except Exception:
-                    return officer, False
-
-            update_results: dict[str, bool] = {}
-            if updates_needed:
-                tasks = [update_officer(off, chg) for off, chg in updates_needed.items()]
-                for future in asyncio.as_completed(tasks):
-                    officer, success = await future
-                    update_results[officer] = success
-                    label = "updated" if success else "failed"
-                    yield f"data: {json.dumps({'tool_done': {'name': 'update_officer_memory', 'officer': officer, 'success': success, 'message': f'{officer.capitalize()} Officer memory {label}'}})}\n\n"
-
-            # ── Phase 3: Respond ───────────────────────────────────────────
-            # Sonnet streams Dispatch's acknowledgment. Small context: only the
-            # recent conversation + a summary of what was just updated.
-            if update_results:
-                updated = [k for k, v in update_results.items() if v]
-                failed  = [k for k, v in update_results.items() if not v]
-                actions = f"Updated: {', '.join(updated)}." + (f" Failed: {', '.join(failed)}." if failed else "")
-            else:
-                actions = "No officer memories needed updating based on Greg's message."
-
-            dispatch_system = (
-                "You are Dispatch, Greg's personal command-and-control assistant. "
-                "Direct, warm, no corporate speak. Treat him as a capable adult.\n\n"
-                "You have just completed a debrief. All memory updates have already been written. "
-                "Do not attempt to create notes or call tools — the record is already corrected.\n\n"
-                f"---\n\n# CURRENT DATE AND TIME\n\n{NOW}\n\n"
-                f"---\n\n# DEBRIEF ACTIONS TAKEN\n\n{actions}"
-            )
-
-            final_text = ""
-            async with client.messages.stream(
-                model=LANE_MODEL,
-                max_tokens=1024,
-                timeout=60.0,
-                system=dispatch_system,
-                messages=list(debrief_conversation[-8:]),
-            ) as stream:
-                async for text in stream.text_stream:
-                    final_text += text
-                    yield f"data: {json.dumps({'text': text})}\n\n"
-
-            debrief_conversation.append({"role": "assistant", "content": final_text})
-            yield f"data: {json.dumps({'done': True})}\n\n"
-
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        async for chunk in _agentic_generate(
+            initial_messages=list(debrief_conversation),
+            system=system,
+            tools=DEBRIEF_TOOLS,
+            execute_lane="dispatch",
+            on_complete=on_complete,
+            model=MODEL,
+        ):
+            yield chunk
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -611,14 +632,29 @@ async def clear_debrief():
 
 @app.get("/api/history/{lane}")
 async def get_history(lane: str):
-    """Return displayable history — user/assistant text only, no tool turns."""
+    """Return displayable history — user/assistant text only, no tool turns. Includes actual array index."""
     if lane not in conversations:
         raise HTTPException(404)
     display = []
-    for msg in conversations[lane]:
+    for i, msg in enumerate(conversations[lane]):
         if isinstance(msg.get("content"), str) and msg["content"].strip():
-            display.append({"role": msg["role"], "text": msg["content"]})
+            display.append({"role": msg["role"], "text": msg["content"], "idx": i})
     return display
+
+
+@app.delete("/api/history/{lane}/{idx}")
+async def delete_history_message(lane: str, idx: int):
+    """Delete a single message from a lane's history by its array index."""
+    if lane not in conversations:
+        raise HTTPException(404)
+    if idx < 0 or idx >= len(conversations[lane]):
+        raise HTTPException(400, f"Index {idx} out of range")
+    conversations[lane].pop(idx)
+    try:
+        vault.save_history(lane, conversations[lane])
+    except Exception:
+        pass
+    return {"ok": True}
 
 
 @app.delete("/api/history/{lane}")
